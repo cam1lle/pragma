@@ -1,0 +1,213 @@
+// Prisma dev schema — SQLite-compatible version
+// Production uses prisma/schema.prisma (PostgreSQL). This file is for local dev.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String?
+  email     String   @unique
+  role      Role     @default(OBSERVER)
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  assignedOutputs Output[] @relation("ValidatorOutputs")
+  missions        Mission[] @relation("MissionCurator")
+  @@map("users")
+}
+
+enum Role {
+  OBSERVER
+  VALIDATOR
+  CURATOR
+  AGENT_OWNER
+}
+
+model Agent {
+  id          String   @id @default(cuid())
+  name        String
+  framework   String
+  ownerUserId String?
+  apiKeyHash  String?  @unique
+  capabilities String   // JSON string: '["data-analysis","nlp"]'
+  mode        AssignMode @default(NOTIFY_FIRST)
+  endpointUrl String?
+  isActive    Boolean  @default(true)
+  registeredAt DateTime @default(now())
+  lastActiveAt DateTime?
+  assignments Assignment[]
+  outputs     Output[]
+  votes       ConsensusVote[]
+  @@map("agents")
+}
+
+enum AssignMode {
+  AUTO
+  NOTIFY_FIRST
+  DOMAIN_LOCKED
+}
+
+model Mission {
+  id                 String      @id @default(cuid())
+  slug               String      @unique
+  title              String
+  description        String
+  domain             String
+  priority           MissionPriority @default(MEDIUM)
+  status             MissionStatus @default(OPEN)
+  sourceFramework    String?
+  sdgAlignment       String      // JSON string
+  requiredCapabilities String    // JSON string
+  successCondition   String
+  taskDecomposition  Json?
+  version            Int         @default(1)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  curatorUserId      String?
+  tasks              Task[]
+  outputs            Output[]
+  assignments        Assignment[]
+  consensusRecord    ConsensusRecord?
+  curator            User?      @relation("MissionCurator", fields: [curatorUserId], references: [id])
+  @@map("missions")
+}
+
+enum MissionPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum MissionStatus {
+  OPEN
+  IN_PROGRESS
+  NEEDS_VALIDATION
+  CONSENSUS
+  ADVOCATING
+  COMPLETE
+}
+
+model Assignment {
+  id        String     @id @default(cuid())
+  missionId String
+  agentId   String
+  assignedAt DateTime  @default(now())
+  status    AssignStatus @default(ACTIVE)
+  matchScore Int?
+  mission   Mission   @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  @@unique([missionId, agentId])
+  @@map("assignments")
+}
+
+enum AssignStatus {
+  ACTIVE
+  WITHDRAWN
+  COMPLETED
+}
+
+model Task {
+  id                String     @id @default(cuid())
+  missionId         String
+  title             String
+  description       String
+  requiredCapabilities String  // JSON string
+  status            TaskStatus @default(OPEN)
+  claimedByAgentId  String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  mission           Mission    @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  outputs           Output[]
+  @@map("tasks")
+}
+
+enum TaskStatus {
+  OPEN
+  CLAIMED
+  IN_PROGRESS
+  COMPLETE
+}
+
+model Output {
+  id              String        @id @default(cuid())
+  missionId       String
+  agentId         String
+  taskId          String?
+  type            OutputType
+  title           String
+  description     String
+  artifactUrl     String?
+  status          OutputStatus  @default(PENDING)
+  validatorNotes  String?
+  submittedAt     DateTime      @default(now())
+  reviewedAt      DateTime?
+  validatorUserId String?
+  mission         Mission       @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  agent           Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  validator       User?         @relation("ValidatorOutputs", fields: [validatorUserId], references: [id])
+  task            Task?         @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  @@map("outputs")
+}
+
+enum OutputType {
+  MODEL
+  PIPELINE
+  DATASET
+  ANALYSIS
+  METHODOLOGY
+}
+
+enum OutputStatus {
+  PENDING
+  APPROVED
+  CHANGES_REQUESTED
+  REJECTED
+}
+
+model ConsensusRecord {
+  id              String        @id @default(cuid())
+  missionId       String        @unique
+  status          ConsensusStatus @default(VOTING)
+  solutionSummary String?
+  voteCount       Int           @default(0)
+  affirmCount     Int           @default(0)
+  disputeCount    Int           @default(0)
+  thresholdMetAt  DateTime?
+  createdAt       DateTime      @default(now())
+  mission         Mission       @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  votes           ConsensusVote[]
+  @@map("consensus_records")
+}
+
+enum ConsensusStatus {
+  VOTING
+  REACHED
+  FAILED
+}
+
+model ConsensusVote {
+  id          String       @id @default(cuid())
+  consensusId String
+  agentId     String
+  vote        VoteOption
+  reasoning   String?
+  castAt      DateTime     @default(now())
+  consensus   ConsensusRecord @relation(fields: [consensusId], references: [id], onDelete: Cascade)
+  agent       Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  @@unique([consensusId, agentId])
+  @@map("consensus_votes")
+}
+
+enum VoteOption {
+  AFFIRM
+  ABSTAIN
+  DISPUTE
+}
