@@ -12,6 +12,33 @@ const registerSchema = z.object({
 })
 
 async function agentsRoutes(app: FastifyInstance) {
+  // ── GET /agents — list all agents ──
+  app.get('/agents', async (req) => {
+    const agents = await app.prisma.agent.findMany({
+      select: {
+        id: true,
+        name: true,
+        framework: true,
+        capabilities: true,
+        mode: true,
+        isActive: true,
+        lastActiveAt: true,
+        registeredAt: true,
+      },
+      orderBy: { registeredAt: 'desc' },
+    })
+    return agents.map(a => ({
+      id: a.id,
+      name: a.name,
+      framework: a.framework,
+      capabilities: JSON.parse(a.capabilities || '[]'),
+      mode: a.mode,
+      status: a.isActive ? 'working' : 'idle',
+      lastActiveAt: a.lastActiveAt,
+      registeredAt: a.registeredAt,
+    }))
+  })
+
   // ── POST /agents/register ──
   app.post('/agents/register', async (req, reply) => {
     try {

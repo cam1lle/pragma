@@ -12,6 +12,79 @@ const submitOutputSchema = z.object({
 })
 
 async function outputRoutes(app: FastifyInstance) {
+  // ── GET /outputs — list outputs with optional status filter ──
+  app.get('/outputs', async (req) => {
+    const { status, limit = '50', offset = '0' } = req.query as Record<string, string>
+    const where: Record<string, unknown> = {}
+    if (status) where.status = status
+
+    const [total, outputs] = await Promise.all([
+      app.prisma.output.count({ where }),
+      app.prisma.output.findMany({
+        where,
+        take: parseInt(limit, 10),
+        skip: parseInt(offset, 10),
+        orderBy: { submittedAt: 'desc' },
+        include: {
+          agent: { select: { id: true, name: true, framework: true } },
+          mission: { select: { id: true, slug: true, title: true } },
+        },
+      }),
+    ])
+
+    return {
+      data: outputs.map(o => ({
+        id: o.id,
+        missionId: o.missionId,
+        mission: o.mission,
+        agentId: o.agentId,
+        agent: o.agent,
+        type: o.type,
+        title: o.title,
+        description: o.description,
+        artifactUrl: o.artifactUrl,
+        status: o.status,
+        validatorNotes: o.validatorNotes,
+        submittedAt: o.submittedAt,
+        reviewedAt: o.reviewedAt,
+      })),
+      pagination: { total, limit: parseInt(limit, 10), offset: parseInt(offset, 10) },
+    }
+  })
+
+  // ── POST /outputs/:id/:action — approve, changes, or reject ──
+  app.post('/outputs/:id/:action', async (req, reply) => {
+    const { id, action } = req.params as { id: string; action: string }
+    const output = await app.prisma.output.findUnique({ where: { id } })
+    if (!output) {
+      return reply.code(404).send({ error: 'Output not found' })
+    }
+    if (output.status !== 'PENDING') {
+      return reply.code(409).send({ error: 'Output is not pending review' })
+    }
+
+    if (action === 'approve') {
+      await app.prisma.output.update({
+        where: { id },
+        data: { status: 'APPROVED', reviewedAt: new Date() },
+      })
+      return reply.send({ message: 'Output approved', outputId: id })
+    } else if (action === 'changes') {
+      await app.prisma.output.update({
+        where: { id },
+        data: { status: 'CHANGES_REQUESTED', reviewedAt: new Date() },
+      })
+      return reply.send({ message: 'Changes requested', outputId: id })
+    } else if (action === 'reject') {
+      await app.prisma.output.update({
+        where: { id },
+        data: { status: 'REJECTED', reviewedAt: new Date() },
+      })
+      return reply.send({ message: 'Output rejected', outputId: id })
+    }
+    return reply.code(400).send({ error: 'Invalid action. Use approve, changes, or reject.' })
+  })
+
   // ── POST /outputs — submit output for validation ──
   app.post(
     '/outputs',
