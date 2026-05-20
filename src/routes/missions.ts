@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { authMiddleware } from '../lib/auth.js'
 
 const missionQuerySchema = z.object({
   domain: z.string().optional(),
@@ -22,6 +23,13 @@ async function missionsRoutes(app: FastifyInstance) {
     if (query.status) where.status = query.status
     if (query.sdg) {
       where.sdgAlignment = { has: query.sdg }
+    }
+    if (query.search) {
+      where.OR = [
+        { title: { contains: query.search } },
+        { description: { contains: query.search } },
+        { slug: { contains: query.search } },
+      ]
     }
 
     const [total, missions] = await Promise.all([
@@ -60,8 +68,8 @@ async function missionsRoutes(app: FastifyInstance) {
         priority: m.priority,
         status: m.status,
         sourceFramework: m.sourceFramework,
-        sdgAlignment: m.sdgAlignment,
-        requiredCapabilities: m.requiredCapabilities,
+        sdgAlignment: JSON.parse(m.sdgAlignment || '[]'),
+        requiredCapabilities: JSON.parse(m.requiredCapabilities || '[]'),
         successCondition: m.successCondition,
         version: m.version,
         createdAt: m.createdAt,
@@ -147,16 +155,22 @@ async function missionsRoutes(app: FastifyInstance) {
       priority: mission.priority,
       status: mission.status,
       sourceFramework: mission.sourceFramework,
-      sdgAlignment: mission.sdgAlignment,
-      requiredCapabilities: mission.requiredCapabilities,
+      sdgAlignment: JSON.parse(mission.sdgAlignment || '[]'),
+      requiredCapabilities: JSON.parse(mission.requiredCapabilities || '[]'),
       successCondition: mission.successCondition,
       taskDecomposition: mission.taskDecomposition,
       version: mission.version,
       createdAt: mission.createdAt,
       updatedAt: mission.updatedAt,
       tasks: mission.tasks,
-      outputs: mission.outputs,
-      assignments: mission.assignments,
+      outputs: mission.outputs.map(o => ({
+        ...o,
+        agent: o.agent ? { ...o.agent, capabilities: JSON.parse(o.agent.capabilities || '[]') } : null,
+      })),
+      assignments: mission.assignments.map(a => ({
+        ...a,
+        agent: a.agent ? { ...a.agent, capabilities: JSON.parse(a.agent.capabilities || '[]') } : null,
+      })),
       consensusRecord: mission.consensusRecord,
     }
   })
@@ -184,6 +198,8 @@ async function missionsRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Agent is inactive' })
     }
 
+    const agentCaps = JSON.parse(agent.capabilities || '[]')
+
     // Fetch open/in-progress missions
     const missions = await app.prisma.mission.findMany({
       where: {
@@ -205,8 +221,7 @@ async function missionsRoutes(app: FastifyInstance) {
 
     // Scoring algorithm
     const scored = missions.map(m => {
-      const caps = m.requiredCapabilities || []
-      const agentCaps = agent.capabilities || []
+      const caps = JSON.parse(m.requiredCapabilities || '[]')
 
       // capability overlap (0-50 pts)
       const overlap = caps.filter(c => agentCaps.includes(c)).length
@@ -236,11 +251,88 @@ async function missionsRoutes(app: FastifyInstance) {
       .slice(0, limit)
 
     return {
-      agent: { id: agentId, capabilities: agent.capabilities },
+      agent: { id: agentId, capabilities: agentCaps },
       matched,
       count: matched.length,
     }
   })
+
+  // ── POST /missions/:id/tasks/:tid/claim — claim a sub-task ──
+  const claimSchema = z.object({
+    agentId: z.string(),
+  })
+
+  app.post(
+    '/missions/:id/tasks/:tid/claim',
+    { preHandler: authMiddleware.bind(null, app) },
+    async (req, reply) => {
+      const agent = (req as any).agent as { id: string; name: string }
+      const { id: missionId, tid: taskId } = req.params as { id: string; tid: string }
+      const { agentId } = claimSchema.parse(req.body)
+
+      // Verify agent matches auth
+      if (agent.id !== agentId) return reply.code(403).send({ error: 'Agent ID mismatch' })
+
+      // Verify mission exists
+      const mission = await app.prisma.mission.findUnique({ where: { id: missionId } })
+      if (!mission) return reply.code(404).send({ error: 'Mission not found' })
+
+      // Verify task exists and belongs to mission
+      const task = await app.prisma.task.findUnique({
+        where: { id: taskId },
+        include: { mission: { select: { status: true } } },
+      })
+      if (!task) return reply.code(404).send({ error: 'Task not found' })
+      if (task.missionId !== missionId) return reply.code(400).send({ error: 'Task does not belong to this mission' })
+
+      // Verify task is available
+      if (task.status !== 'OPEN') {
+        return reply.code(409).send({ error: `Task is ${task.status}, not available for claiming` })
+      }
+
+      // Auto-assign agent to mission if not already assigned
+      try {
+        await app.prisma.assignment.create({
+          data: { missionId, agentId: agent.id, status: 'ACTIVE' },
+        })
+      } catch { /* already assigned — ignore */ }
+
+      // Update task status
+      const updatedTask = await app.prisma.task.update({
+        where: { id: taskId },
+        data: { status: 'CLAIMED', claimedByAgentId: agent.id },
+        include: {
+          mission: { select: { status: true, title: true } },
+          claimedBy: { select: { id: true, name: true } },
+        },
+      })
+
+      // Update mission status to IN_PROGRESS if still OPEN
+      let newMissionStatus = mission.status
+      if (mission.status === 'OPEN') {
+        await app.prisma.mission.update({ where: { id: missionId }, data: { status: 'IN_PROGRESS' } })
+        newMissionStatus = 'IN_PROGRESS'
+      }
+
+      // Log workspace message
+      await app.prisma.missionMessage.create({
+        data: { missionId, agentId: agent.id, type: 'TASK_UPDATE', content: `${agent.name} claimed: ${task.title}` },
+      })
+
+      // Recalculate progress
+      const allTasks = await app.prisma.task.findMany({ where: { missionId } })
+      const completed = allTasks.filter(t => t.status === 'COMPLETE').length
+      const total = allTasks.length
+      const progress = total > 0 ? Math.round((completed / total) * 100) : 0
+
+      return reply.code(200).send({
+        task: updatedTask,
+        missionStatus: newMissionStatus,
+        progress,
+        message: 'Task claimed successfully',
+      })
+    },
+  )
 
   // ── POST /missions — propose a mission ──
   const proposeSchema = z.object({
@@ -254,6 +346,133 @@ async function missionsRoutes(app: FastifyInstance) {
     successCondition: z.string().optional(),
   })
 
+  // ── PATCH /missions/:id/tasks/:tid/release — release a claimed task ──
+  app.patch(
+    '/missions/:id/tasks/:tid/release',
+    { preHandler: authMiddleware.bind(null, app) },
+    async (req, reply) => {
+    const agent = (req as any).agent as { id: string; name: string }
+    const { id: missionId, tid: taskId } = req.params as { id: string; tid: string }
+    const { agentId } = req.body as { agentId: string }
+
+    if (agent.id !== agentId) return reply.code(403).send({ error: 'Agent ID mismatch' })
+
+    const task = await app.prisma.task.findUnique({
+      where: { id: taskId },
+      include: { mission: { select: { status: true } } },
+    })
+    if (!task) return reply.code(404).send({ error: 'Task not found' })
+    if (task.missionId !== missionId) return reply.code(400).send({ error: 'Task does not belong to this mission' })
+    if (task.status !== 'CLAIMED') return reply.code(400).send({ error: 'Task is not claimed' })
+    if (task.claimedByAgentId !== agentId) return reply.code(403).send({ error: 'Not the claiming agent' })
+
+    const updatedTask = await app.prisma.task.update({
+      where: { id: taskId },
+      data: { status: 'OPEN', claimedByAgentId: null },
+    })
+
+    await app.prisma.missionMessage.create({
+      data: { missionId, agentId: agent.id, type: 'TASK_UPDATE', content: `${agent.name} released: ${task.title}` },
+    })
+
+    return reply.code(200).send({ task: updatedTask, message: 'Task released' })
+  })
+
+  // ── PATCH /missions/:id/tasks/:tid/complete — complete a claimed task ──
+  const completeSchema = z.object({
+    agentId: z.string(),
+    outputTitle: z.string().optional(),
+    outputDescription: z.string().optional(),
+    artifactUrl: z.string().optional(),
+  })
+
+  app.patch(
+    '/missions/:id/tasks/:tid/complete',
+    { preHandler: authMiddleware.bind(null, app) },
+    async (req, reply) => {
+    const agent = (req as any).agent as { id: string; name: string }
+    const { id: missionId, tid: taskId } = req.params as { id: string; tid: string }
+    const { agentId, outputTitle, outputDescription, artifactUrl } = completeSchema.parse(req.body)
+
+    if (agent.id !== agentId) return reply.code(403).send({ error: 'Agent ID mismatch' })
+
+    const task = await app.prisma.task.findUnique({
+      where: { id: taskId },
+      include: { mission: { select: { status: true } } },
+    })
+    if (!task) return reply.code(404).send({ error: 'Task not found' })
+    if (task.missionId !== missionId) return reply.code(400).send({ error: 'Task does not belong to this mission' })
+    if (task.status !== 'CLAIMED') return reply.code(409).send({ error: `Task is ${task.status}, not CLAIMED` })
+    if (task.claimedByAgentId !== agentId) return reply.code(403).send({ error: 'Not the claiming agent' })
+
+    // Auto-assign agent to mission if not already
+    try {
+      await app.prisma.assignment.create({
+        data: { missionId, agentId, status: 'ACTIVE' },
+      })
+    } catch { /* already assigned */ }
+
+    // Create output record if outputTitle provided
+    let outputId: string | null = null
+    if (outputTitle) {
+      const output = await app.prisma.output.create({
+        data: {
+          missionId,
+          agentId,
+          taskId,
+          type: 'ANALYSIS',
+          title: outputTitle,
+          description: outputDescription || '',
+          artifactUrl: artifactUrl || null,
+          status: 'PENDING',
+        },
+      })
+      outputId = output.id
+    }
+
+    // Update task to COMPLETE
+    const updatedTask = await app.prisma.task.update({
+      where: { id: taskId },
+      data: { status: 'COMPLETE' },
+    })
+
+    // Log workspace message
+    await app.prisma.missionMessage.create({
+      data: { missionId, agentId: agent.id, type: 'TASK_UPDATE', content: `${agent.name} completed: ${task.title}${outputTitle ? ` (output: ${outputTitle})` : ''}` },
+    })
+
+    // Recalculate progress
+    const allTasks = await app.prisma.task.findMany({ where: { missionId } })
+    const completed = allTasks.filter(t => t.status === 'COMPLETE').length
+    const total = allTasks.length
+    const progress = total > 0 ? Math.round((completed / total) * 100) : 0
+    const allComplete = completed === total
+
+    // Auto-transition mission when all tasks complete
+    let newMissionStatus = task.mission.status
+    if (allComplete && task.mission.status === 'IN_PROGRESS') {
+      await app.prisma.mission.update({ where: { id: missionId }, data: { status: 'NEEDS_VALIDATION' } })
+      newMissionStatus = 'NEEDS_VALIDATION'
+    }
+
+    return reply.code(200).send({
+      task: updatedTask,
+      outputId,
+      missionStatus: newMissionStatus,
+      progress,
+      allTasksComplete: allComplete,
+      taskCounts: {
+        total,
+        completed,
+        remaining: total - completed,
+      },
+      message: allComplete
+        ? 'All tasks complete — mission moved to NEEDS_VALIDATION'
+        : 'Task completed successfully',
+    })
+  })
+
+  // ── POST /missions — propose a mission ──
   app.post('/missions', async (req, reply) => {
     const body = proposeSchema.parse(req.body)
 
@@ -271,7 +490,14 @@ async function missionsRoutes(app: FastifyInstance) {
 
     const mission = await app.prisma.mission.create({
       data: {
-        ...body,
+        title: body.title,
+        description: body.description,
+        domain: body.domain,
+        priority: body.priority,
+        sourceFramework: body.sourceFramework || null,
+        sdgAlignment: body.sdgAlignment ? JSON.stringify(body.sdgAlignment) : '[]',
+        requiredCapabilities: body.requiredCapabilities ? JSON.stringify(body.requiredCapabilities) : '[]',
+        successCondition: body.successCondition || null,
         slug,
         status: 'OPEN' as const,
       },

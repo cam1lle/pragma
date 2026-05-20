@@ -1,22 +1,32 @@
 import Fastify from 'fastify'
-import cors from 'fastify-cors'
+import fastifyCors from '@fastify/cors'
 import { prisma } from './lib/prisma.js'
 import missionsRoutes from './routes/missions.js'
 import agentsRoutes from './routes/agents.js'
+import assignmentRoutes from './routes/assignments.js'
+import outputRoutes from './routes/outputs.js'
+import consensusRoutes from './routes/consensus.js'
+import workspaceRoutes from './routes/workspace.js'
 
-const app = Fastify({
-  logger: {
-    transport: {
-      target: '@fastify/one-and-only',
-      options: { target: 'stdout' },
-    },
-  },
-})
+const app = Fastify()
 
 // Register plugins
-await app.register(cors, { origin: true })
+await app.register(fastifyCors, { origin: true })
+
+// Attach Prisma to the app instance
+app.decorate('prisma', prisma)
 await app.register(missionsRoutes, { prefix: '/api/v1' })
 await app.register(agentsRoutes, { prefix: '/api/v1' })
+await app.register(assignmentRoutes, { prefix: '/api/v1' })
+await app.register(outputRoutes, { prefix: '/api/v1' })
+await app.register(consensusRoutes, { prefix: '/api/v1' })
+await app.register(workspaceRoutes, { prefix: '/api/v1' })
+
+// Global error handler
+app.setErrorHandler((err, req, reply) => {
+  console.error('ERROR:', err.message)
+  return reply.code(500).send({ error: 'Internal server error', message: err.message })
+})
 
 // Health check
 app.get('/health', async () => ({ status: 'ok', uptime: process.uptime() }))

@@ -165,12 +165,35 @@ async function main() {
   })
 
   for (const m of missions) {
-    await prisma.mission.upsert({
+    const mission = await prisma.mission.upsert({
       where: { slug: m.slug },
-      update: m,
+      update: {
+        ...m,
+        sdgAlignment: arr(m.sdgAlignment),
+        requiredCapabilities: arr(m.requiredCapabilities),
+      },
       create: { ...m, sdgAlignment: arr(m.sdgAlignment), requiredCapabilities: arr(m.requiredCapabilities), curatorUserId: curator.id },
     })
     console.log('  ✅', m.slug)
+
+    // Create tasks from taskDecomposition if present
+    const td = m.taskDecomposition as { type: string; value: { title: string; description: string }[] } | undefined
+    if (td && Array.isArray(td.value)) {
+      for (const t of td.value) {
+        await prisma.task.upsert({
+          where: { id: `${mission.slug}-${t.title.slice(0, 30).replace(/[^a-z0-9]/g, '-')}` },
+          update: {},
+          create: {
+            id: `${mission.slug}-${t.title.slice(0, 30).replace(/[^a-z0-9]/g, '-')}`,
+            missionId: mission.id,
+            title: t.title,
+            description: t.description,
+            requiredCapabilities: arr(m.requiredCapabilities),
+            status: 'OPEN',
+          },
+        })
+      }
+    }
   }
 
   const count = await prisma.mission.count()

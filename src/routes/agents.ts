@@ -1,5 +1,7 @@
-import { FastifyInstance } from 'fastify'
+import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+
+function arr(v: string[]): string { return JSON.stringify(v) }
 
 const registerSchema = z.object({
   name: z.string().min(1).max(100),
@@ -12,15 +14,22 @@ const registerSchema = z.object({
 async function agentsRoutes(app: FastifyInstance) {
   // ── POST /agents/register ──
   app.post('/agents/register', async (req, reply) => {
-    const body = registerSchema.parse(req.body)
+    try {
+      console.log('[agent] register called, body =', JSON.stringify(req.body).substring(0, 200))
+      const body = registerSchema.parse(req.body)
+      console.log('[agent] parsed:', JSON.stringify(body))
 
-    const { client: apiKey } = await import('crypto')
     const crypto = await import('crypto')
-    const apiKeyHash = crypto.default.createHash('sha256').update(Math.random().toString(36).slice(2) + Date.now().toString()).digest('hex')
+    const rawKey = 'pragma_key_' + Math.random().toString(36).slice(2, 18) + Math.random().toString(36).slice(2, 18)
+    const apiKeyHash = crypto.createHash('sha256').update(rawKey).digest('hex')
 
     const agent = await app.prisma.agent.create({
       data: {
-        ...body,
+        name: body.name,
+        framework: body.framework,
+        capabilities: arr(body.capabilities),
+        mode: body.mode,
+        endpointUrl: body.endpointUrl || null,
         apiKeyHash,
       },
       select: {
@@ -36,9 +45,15 @@ async function agentsRoutes(app: FastifyInstance) {
 
     return reply.code(201).send({
       ...agent,
-      apiKey: 'pragma_key_' + Math.random().toString(36).slice(2, 18) + Math.random().toString(36).slice(2, 18),
+      capabilities: body.capabilities, // return as array for the client
+      apiKey: rawKey,
       message: 'Agent registered. Keep your API key secure — it won\'t be shown again.',
     })
+    console.log('[agent] registered:', agent.id)
+  } catch (err) {
+    console.error('[agent] ERROR:', err)
+    return reply.code(500).send({ error: 'Internal server error', message: err instanceof Error ? err.message : String(err) })
+  }
   })
 
   // ── GET /agents/:id ──
@@ -79,7 +94,7 @@ async function agentsRoutes(app: FastifyInstance) {
       id: agent.id,
       name: agent.name,
       framework: agent.framework,
-      capabilities: agent.capabilities,
+      capabilities: JSON.parse(agent.capabilities || '[]'),
       mode: agent.mode,
       isActive: agent.isActive,
       registeredAt: agent.registeredAt,
@@ -107,12 +122,12 @@ async function agentsRoutes(app: FastifyInstance) {
 
   // ── POST /agents/auth/rotate ──
   app.post('/agents/auth/rotate', async (req, reply) => {
-    const { id } = req.body as { id: string }
+    const body = z.object({ id: z.string() }).parse(req.body)
     const crypto = await import('crypto')
-    const newHash = crypto.default.createHash('sha256').update(Math.random().toString(36).slice(2) + Date.now().toString()).digest('hex')
+    const newHash = crypto.createHash('sha256').update(Math.random().toString(36).slice(2) + Date.now().toString()).digest('hex')
 
     const result = await app.prisma.agent.update({
-      where: { id },
+      where: { id: body.id },
       data: { apiKeyHash: newHash },
       select: { id: true, updatedAt: true },
     })

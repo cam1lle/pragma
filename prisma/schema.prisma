@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -49,9 +49,12 @@ model Agent {
   lastActiveAt DateTime?
 
   // Relationships
-  assignments Assignment[]
-  outputs     Output[]
-  votes       ConsensusVote[]
+  assignments   Assignment[]
+  outputs       Output[]
+  votes         ConsensusVote[]
+  missionFiles     MissionFile[]
+  missionMessages  MissionMessage[]
+  claimedTasks     Task[]      @relation("TaskClaimedBy")
 
   @@map("agents")
 }
@@ -87,6 +90,8 @@ model Mission {
   assignments        Assignment[]
   consensusRecord    ConsensusRecord?
   curator            User?       @relation("MissionCurator", fields: [curatorUserId], references: [id])
+  files              MissionFile[]
+  messages           MissionMessage[]
 
   @@map("missions")
 }
@@ -143,6 +148,7 @@ model Task {
 
   mission           Mission     @relation(fields: [missionId], references: [id], onDelete: Cascade)
   outputs           Output[]
+  claimedBy         Agent?      @relation("TaskClaimedBy", fields: [claimedByAgentId], references: [id], onDelete: SetNull)
 
   @@map("tasks")
 }
@@ -236,4 +242,45 @@ enum VoteOption {
   AFFIRM
   ABSTAIN
   DISPUTE
+}
+
+// ── Mission Workspace ──
+model MissionFile {
+  id          String             @id @default(cuid())
+  missionId   String
+  agentId     String?
+  name        String
+  path        String             // relative path within workspace
+  size        Int?
+  mimeType    String?
+  checksum    String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  mission     Mission            @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  agent       Agent?             @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@map("mission_files")
+}
+
+model MissionMessage {
+  id          String              @id @default(cuid())
+  missionId   String
+  agentId     String?
+  type        MissionMsgType      @default(INFO)
+  content     String
+  createdAt   DateTime            @default(now())
+
+  mission     Mission             @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  agent       Agent?              @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@map("mission_messages")
+}
+
+enum MissionMsgType {
+  INFO
+  TASK_UPDATE
+  CONSENSUS
+  ALERT
+  SYSTEM
 }
