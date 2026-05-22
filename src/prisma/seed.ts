@@ -1,4 +1,5 @@
 import { PrismaClient, MissionPriority, MissionStatus } from '@prisma/client'
+import { randomUUID } from 'node:crypto'
 const prisma = new PrismaClient()
 
 // Helper: convert array → JSON string for SQLite
@@ -156,6 +157,74 @@ const missions = [
   },
 ]
 
+// ── Agents ──
+const agents = [
+  { id: randomUUID(), name: 'SatelliteAnalyst', framework: 'openclaw', capabilities: JSON.stringify(['satellite-analysis', 'data-analysis', 'computer-vision']), mode: 'NOTIFY_FIRST' },
+  { id: randomUUID(), name: 'DataMiner', framework: 'crewai', capabilities: JSON.stringify(['data-analysis', 'nlp', 'edge-ml']), mode: 'NOTIFY_FIRST' },
+  { id: randomUUID(), name: 'FieldValidator', framework: 'autogen', capabilities: JSON.stringify(['geospatial', 'epidemiology', 'multilingual']), mode: 'AUTO' },
+  { id: randomUUID(), name: 'ModelBuilder', framework: 'openclaw', capabilities: JSON.stringify(['edge-ml', 'data-analysis', 'low-resource-ml']), mode: 'NOTIFY_FIRST' },
+  { id: randomUUID(), name: 'NLPResearcher', framework: 'crewai', capabilities: JSON.stringify(['nlp', 'multilingual', 'computer-vision']), mode: 'NOTIFY_FIRST' },
+  { id: randomUUID(), name: 'ClimateForecaster', framework: 'openclaw', capabilities: JSON.stringify(['satellite-analysis', 'data-analysis', 'nlp']), mode: 'AUTO' },
+]
+
+// ── PENDING outputs for human validation ──
+const pendingOutputs = [
+  {
+    id: randomUUID(),
+    missionSlug: 'crop-yield-prediction-africa',
+    agentName: 'SatelliteAnalyst',
+    type: 'MODEL',
+    title: 'LSTM Crop Yield Prediction v3',
+    description: 'Temporal LSTM model trained on Sentinel-2 imagery (2020-2025) across Kenya, Ethiopia, and Malawi. Achieves 87.2% RMSE on held-out test set. Includes uncertainty quantification via Monte Carlo dropout.',
+    artifactUrl: 'https://github.com/pragma-models/crop-yield-lstm/releases/tag/v3.2',
+  },
+  {
+    id: randomUUID(),
+    missionSlug: 'malaria-hotspot-mapping',
+    agentName: 'DataMiner',
+    type: 'PIPELINE',
+    title: 'Real-time Malaria Risk Pipeline',
+    description: 'End-to-end pipeline: environmental sensor data ingestion → feature engineering → XGBoost classifier → live dashboard. Trained on 18 months of case data from 3 African countries. Precision: 91.3%, Recall: 88.7%.',
+    artifactUrl: 'https://github.com/pragma-models/malaria-pipeline',
+  },
+  {
+    id: randomUUID(),
+    missionSlug: 'wildfire-early-warning',
+    agentName: 'ClimateForecaster',
+    type: 'ANALYSIS',
+    title: 'California Wildfire Risk Atlas 2026',
+    description: 'Comprehensive risk analysis combining satellite thermal anomalies, vegetation dryness indices (NDVI), atmospheric pressure patterns, and historical fire data. Covers all 58 California counties with 72-hour lead time.',
+    artifactUrl: 'https://docs.pragma.global/wildfire-atlas-2026',
+  },
+  {
+    id: randomUUID(),
+    missionSlug: 'ocean-plastic-tracking',
+    agentName: 'SatelliteAnalyst',
+    type: 'DATASET',
+    title: 'Global Microplastic Accumulation Map',
+    description: 'Satellite + drone imagery dataset mapping 12,847 microplastic accumulation zones across all major ocean gyres. Includes GPS coordinates, estimated biomass (kg/km²), and source attribution confidence scores.',
+    artifactUrl: 'https://data.pragma.global/ocean-plastic/v1',
+  },
+  {
+    id: randomUUID(),
+    missionSlug: 'pandemic-forecasting-respiratory',
+    agentName: 'NLPResearcher',
+    type: 'MODEL',
+    title: 'Respiratory Outbreak Early Warning System',
+    description: 'Multi-modal forecasting combining Google Trends search volume, hospital ER visit data, climate patterns, and social media sentiment. Predicts outbreaks ≥14 days in advance with 82.4% accuracy across 47 countries.',
+    artifactUrl: 'https://github.com/pragma-models/pandemic-forecast',
+  },
+  {
+    id: randomUUID(),
+    missionSlug: 'drought-early-warning-horn-africa',
+    agentName: 'DataMiner',
+    type: 'ANALYSIS',
+    title: 'Horn of Africa Drought Risk Assessment Q2 2026',
+    description: 'Seasonal drought forecast for Ethiopia, Somalia, and Kenya using vegetation indices (NDVI/EVI), rainfall anomalies, livestock health indicators, and market price data. Identifies 14 high-risk woredas with ≥4 month lead time.',
+    artifactUrl: 'https://docs.pragma.global/drought-horn-africa-q2-2026',
+  },
+]
+
 async function main() {
   console.log('🌱 Seeding Pragma...\n')
   const curator = await prisma.user.upsert({
@@ -196,8 +265,41 @@ async function main() {
     }
   }
 
+  // ── Create agents ──
+  for (const a of agents) {
+    await prisma.agent.create({
+      data: { ...a, ownerUserId: curator.id },
+    })
+    console.log('  ✅ Agent:', a.name)
+  }
+
+  // ── Create pending outputs ──
+  for (const o of pendingOutputs) {
+    const mission = await prisma.mission.findUnique({ where: { slug: o.missionSlug } })
+    const agent = agents.find(a => a.name === o.agentName)
+    if (mission && agent) {
+      await prisma.output.create({
+        data: {
+          id: o.id,
+          missionId: mission.id,
+          agentId: agent.id,
+          type: o.type,
+          title: o.title,
+          description: o.description,
+          artifactUrl: o.artifactUrl,
+          status: 'PENDING',
+        },
+      })
+      console.log('  ✅ Output:', o.title, '(PENDING)')
+    } else {
+      console.log('  ⚠️  Skipped', o.title, '(mission or agent not found)')
+    }
+  }
+
   const count = await prisma.mission.count()
-  console.log(`\n🎉 Done! ${count} missions in database.`)
+  const agentCount = await prisma.agent.count()
+  const outputCount = await prisma.output.count()
+  console.log(`\n🎉 Done! ${count} missions, ${agentCount} agents, ${outputCount} outputs in database.`)
 }
 
 main().catch(e => { console.error('Seed failed:', e); process.exit(1) })

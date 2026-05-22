@@ -633,7 +633,7 @@ async function loadValidations() {
       output: o.title || 'Untitled output',
       preview: (o.description || '').slice(0, 200),
       submitted: o.submittedAt ? timeAgo(new Date(o.submittedAt)) : 'just now',
-      type: o.outputType || 'unknown',
+      type: o.type || 'unknown',
       _raw: o
     }));
     renderValidations();

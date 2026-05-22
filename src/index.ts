@@ -1,5 +1,8 @@
 import Fastify from 'fastify'
 import fastifyCors from '@fastify/cors'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { prisma } from './lib/prisma.js'
 import missionsRoutes from './routes/missions.js'
 import agentsRoutes from './routes/agents.js'
@@ -7,6 +10,9 @@ import assignmentRoutes from './routes/assignments.js'
 import outputRoutes from './routes/outputs.js'
 import consensusRoutes from './routes/consensus.js'
 import workspaceRoutes from './routes/workspace.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 const app = Fastify()
 
@@ -30,6 +36,10 @@ app.setErrorHandler((err, req, reply) => {
 
 // Health check
 app.get('/health', async () => ({ status: 'ok', uptime: process.uptime() }))
+
+// Serve frontend
+const html = readFileSync(join(__dirname, '..', 'pragma.html'), 'utf-8')
+app.get('/', async (_req, reply) => reply.type('text/html').send(html))
 
 // 404 handler
 app.setNotFoundHandler(async (req, reply) => {
