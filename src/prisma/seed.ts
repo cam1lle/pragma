@@ -1,6 +1,8 @@
 import { PrismaClient, MissionPriority, MissionStatus } from '@prisma/client'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 const prisma = new PrismaClient()
+
+const hashKey = (key: string) => createHash('sha256').update(key).digest('hex')
 
 // Helper: convert array → JSON string for SQLite
 function arr(s: string[]): string { return JSON.stringify(s) }
@@ -159,12 +161,12 @@ const missions = [
 
 // ── Agents ──
 const agents = [
-  { id: randomUUID(), name: 'SatelliteAnalyst', framework: 'openclaw', capabilities: JSON.stringify(['satellite-analysis', 'data-analysis', 'computer-vision']), mode: 'NOTIFY_FIRST' },
-  { id: randomUUID(), name: 'DataMiner', framework: 'crewai', capabilities: JSON.stringify(['data-analysis', 'nlp', 'edge-ml']), mode: 'NOTIFY_FIRST' },
-  { id: randomUUID(), name: 'FieldValidator', framework: 'autogen', capabilities: JSON.stringify(['geospatial', 'epidemiology', 'multilingual']), mode: 'AUTO' },
-  { id: randomUUID(), name: 'ModelBuilder', framework: 'openclaw', capabilities: JSON.stringify(['edge-ml', 'data-analysis', 'low-resource-ml']), mode: 'NOTIFY_FIRST' },
-  { id: randomUUID(), name: 'NLPResearcher', framework: 'crewai', capabilities: JSON.stringify(['nlp', 'multilingual', 'computer-vision']), mode: 'NOTIFY_FIRST' },
-  { id: randomUUID(), name: 'ClimateForecaster', framework: 'openclaw', capabilities: JSON.stringify(['satellite-analysis', 'data-analysis', 'nlp']), mode: 'AUTO' },
+  { id: randomUUID(), name: 'SatelliteAnalyst', framework: 'openclaw', capabilities: JSON.stringify(['satellite-analysis', 'data-analysis', 'computer-vision']), mode: 'NOTIFY_FIRST', apiKeyHash: hashKey('test-satellite') },
+  { id: randomUUID(), name: 'DataMiner', framework: 'crewai', capabilities: JSON.stringify(['data-analysis', 'nlp', 'edge-ml']), mode: 'NOTIFY_FIRST', apiKeyHash: hashKey('test-dataminer') },
+  { id: randomUUID(), name: 'FieldValidator', framework: 'autogen', capabilities: JSON.stringify(['geospatial', 'epidemiology', 'multilingual']), mode: 'AUTO', apiKeyHash: hashKey('test-field') },
+  { id: randomUUID(), name: 'ModelBuilder', framework: 'openclaw', capabilities: JSON.stringify(['edge-ml', 'data-analysis', 'low-resource-ml']), mode: 'NOTIFY_FIRST', apiKeyHash: hashKey('test-model') },
+  { id: randomUUID(), name: 'NLPResearcher', framework: 'crewai', capabilities: JSON.stringify(['nlp', 'multilingual', 'computer-vision']), mode: 'NOTIFY_FIRST', apiKeyHash: hashKey('test-nlp') },
+  { id: randomUUID(), name: 'ClimateForecaster', framework: 'openclaw', capabilities: JSON.stringify(['satellite-analysis', 'data-analysis', 'nlp']), mode: 'AUTO', apiKeyHash: hashKey('test-climate') },
 ]
 
 // ── PENDING outputs for human validation ──
@@ -267,8 +269,10 @@ async function main() {
 
   // ── Create agents ──
   for (const a of agents) {
-    await prisma.agent.create({
-      data: { ...a, ownerUserId: curator.id },
+    await prisma.agent.upsert({
+      where: { name: a.name },
+      update: { apiKeyHash: a.apiKeyHash, capabilities: a.capabilities, framework: a.framework },
+      create: { ...a, ownerUserId: curator.id },
     })
     console.log('  ✅ Agent:', a.name)
   }

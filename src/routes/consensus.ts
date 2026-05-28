@@ -13,6 +13,80 @@ const startSchema = z.object({
   votingDurationMinutes: z.number().min(1).max(10080).default(60), // up to 1 week
 })
 
+// ── Shared: close a consensus round (used by manual close + timeout) ──
+async function closeConsensusRound(app: FastifyInstance, missionId: string) {
+  const record = await app.prisma.consensusRecord.findUnique({
+    where: { missionId },
+    include: { votes: { include: { agent: { select: { name: true } } } } },
+  })
+  if (!record || record.status !== 'VOTING') return null
+
+  const totalVotes = record.voteCount
+  const percentAffirm = totalVotes > 0 ? Math.round((record.affirmCount / totalVotes) * 100) : 0
+  const thresholdMet = percentAffirm >= 85
+  const newStatus = thresholdMet ? 'REACHED' : 'FAILED'
+
+  await app.prisma.consensusRecord.update({
+    where: { id: record.id },
+    data: { status: newStatus, thresholdMetAt: thresholdMet ? new Date() : undefined },
+  })
+
+  if (thresholdMet) {
+    await app.prisma.mission.update({
+      where: { id: missionId },
+      data: { status: 'ADVOCATING' },
+    })
+  }
+
+  await app.prisma.missionMessage.create({
+    data: {
+      missionId,
+      type: 'CONSENSUS',
+      content: `Consensus closed: ${newStatus}. ${record.affirmCount}/${totalVotes} affirmed (${percentAffirm}% vs 85% threshold).`,
+    },
+  })
+
+  return {
+    status: newStatus,
+    votes: {
+      total: totalVotes,
+      affirm: record.affirmCount,
+      dispute: record.disputeCount,
+      abstain: totalVotes - record.affirmCount - record.disputeCount,
+      percentage: percentAffirm,
+    },
+  }
+}
+
+// ── Background: check for timed-out consensus rounds every 60s ──
+export function startConsensusTimeoutChecker(app: FastifyInstance) {
+  const interval = setInterval(async () => {
+    try {
+      const now = new Date()
+      const timedOut = await app.prisma.consensusRecord.findMany({
+        where: {
+          status: 'VOTING',
+          votingDeadline: { lte: now },
+        },
+        select: { id: true, missionId: true },
+      })
+      for (const record of timedOut) {
+        app.log.info(`[consensus-timeout] Auto-closing timed-out consensus for mission ${record.missionId}`)
+        const result = await closeConsensusRound(app, record.missionId)
+        if (result) {
+          app.log.info(`[consensus-timeout] Mission ${record.missionId} → ${result.status}`)
+        }
+      }
+    } catch (err) {
+      app.log.error({ err }, '[consensus-timeout] Error checking timeouts')
+    }
+  }, 60_000) // every 60 seconds
+
+  // Make it safe to close
+  interval.unref?.()
+  return () => clearInterval(interval)
+}
+
 async function consensusRoutes(app: FastifyInstance) {
   // ── GET /consensus/:missionId — current consensus state ──
   app.get('/consensus/:missionId', async (req) => {
@@ -38,11 +112,19 @@ async function consensusRoutes(app: FastifyInstance) {
       }
     }
 
+    const now = new Date()
+    const deadline = record.votingDeadline ? new Date(record.votingDeadline) : null
+    const timeRemaining = deadline ? Math.max(0, deadline.getTime() - now.getTime()) : null
+
     return {
       missionId,
       hasConsensus: true,
       status: record.status,
       solutionSummary: record.solutionSummary,
+      votingDurationMinutes: record.votingDurationMinutes,
+      votingDeadline: deadline?.toISOString() || null,
+      timeRemainingMs: timeRemaining,
+      timeRemainingMinutes: timeRemaining ? Math.round(timeRemaining / 60_000) : null,
       votes: {
         total: record.voteCount,
         affirm: record.affirmCount,
@@ -110,12 +192,17 @@ async function consensusRoutes(app: FastifyInstance) {
         approvedOutputs.map((o) => ({ id: o.id, title: o.title, description: o.description }))
       )
 
+      // Compute voting deadline
+      const votingDeadline = new Date(Date.now() + body.votingDurationMinutes * 60 * 1000)
+
       // Create consensus record
       const record = await app.prisma.consensusRecord.create({
         data: {
           missionId,
           solutionSummary,
           status: 'VOTING',
+          votingDurationMinutes: body.votingDurationMinutes,
+          votingDeadline,
         },
       })
 
@@ -153,7 +240,6 @@ async function consensusRoutes(app: FastifyInstance) {
 
       const record = await app.prisma.consensusRecord.findUnique({
         where: { missionId },
-        include: { votes: { include: { agent: { select: { name: true } } } } },
       })
 
       if (!record) {
@@ -163,48 +249,41 @@ async function consensusRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: `Consensus already ended (status: ${record.status})` })
       }
 
-      // Determine outcome
-      const totalVotes = record.voteCount
-      const percentAffirm = totalVotes > 0 ? Math.round((record.affirmCount / totalVotes) * 100) : 0
-      const thresholdMet = percentAffirm >= 85
-
-      const newStatus = thresholdMet ? 'REACHED' : 'FAILED'
-
-      await app.prisma.consensusRecord.update({
-        where: { id: record.id },
-        data: {
-          status: newStatus,
-          thresholdMetAt: thresholdMet ? new Date() : undefined,
-        },
-      })
-
-      // Update mission status based on outcome
-      if (thresholdMet) {
-        await app.prisma.mission.update({
-          where: { id: missionId },
-          data: { status: 'ADVOCATING' },
-        })
+      const result = await closeConsensusRound(app, missionId)
+      if (!result) {
+        return reply.code(409).send({ error: 'Consensus was already closed' })
       }
 
-      // Log
-      await app.prisma.missionMessage.create({
-        data: {
-          missionId,
-          type: 'CONSENSUS',
-          content: `Consensus closed: ${newStatus}. ${record.affirmCount}/${totalVotes} affirmed (${percentAffirm}% vs 85% threshold).`,
+      return reply.code(200).send({
+        message: `Consensus ${result.status.toLowerCase()}`,
+        ...result,
+      })
+    },
+  )
+
+  // ── POST /consensus/check-timeouts — manually trigger timeout check ──
+  app.post(
+    '/consensus/check-timeouts',
+    { preHandler: authMiddleware.bind(null, app) },
+    async (req, reply) => {
+      const now = new Date()
+      const timedOut = await app.prisma.consensusRecord.findMany({
+        where: {
+          status: 'VOTING',
+          votingDeadline: { lte: now },
         },
+        select: { id: true, missionId: true, votingDeadline: true },
       })
 
+      const closed: Array<{ missionId: string; result: any }> = []
+      for (const record of timedOut) {
+        const result = await closeConsensusRound(app, record.missionId)
+        if (result) closed.push({ missionId: record.missionId, result })
+      }
+
       return reply.code(200).send({
-        message: `Consensus ${newStatus.toLowerCase()}`,
-        status: newStatus,
-        votes: {
-          total: totalVotes,
-          affirm: record.affirmCount,
-          dispute: record.disputeCount,
-          abstain: totalVotes - record.affirmCount - record.disputeCount,
-          percentage: percentAffirm,
-        },
+        message: `Checked timeouts. ${closed.length} consensus round(s) auto-closed.`,
+        closed,
       })
     },
   )

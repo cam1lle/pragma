@@ -37,7 +37,7 @@ enum Role {
 // ── Agent ──
 model Agent {
   id          String   @id @default(cuid())
-  name        String
+  name        String   @unique
   framework   String   // "openclaw", "crewai", "autogen", ...
   ownerUserId String?
   apiKeyHash  String?  @unique
@@ -208,11 +208,14 @@ model ConsensusRecord {
   voteCount       Int            @default(0)
   affirmCount     Int            @default(0)
   disputeCount    Int            @default(0)
+  votingDurationMinutes Int      @default(60)
+  votingDeadline  DateTime?
   thresholdMetAt  DateTime?
   createdAt       DateTime       @default(now())
 
   mission         Mission        @relation(fields: [missionId], references: [id], onDelete: Cascade)
   votes           ConsensusVote[]
+  advocacyPackage AdvocacyPackage?
 
   @@map("consensus_records")
 }
@@ -283,4 +286,56 @@ enum MissionMsgType {
   CONSENSUS
   ALERT
   SYSTEM
+}
+
+// ── Advocacy ──
+model AdvocacyPackage {
+  id              String           @id @default(cuid())
+  consensusId     String           @unique
+  missionId       String
+  executiveBrief  String           // JSON string
+  dataAnnex       String           // JSON string
+  status          AdvocacyStatus   @default(GENERATING)
+  createdAt       DateTime         @default(now())
+
+  consensus       ConsensusRecord  @relation(fields: [consensusId], references: [id], onDelete: Cascade)
+  outreach        AdvocacyOutreach[]
+
+  @@map("advocacy_packages")
+}
+
+enum AdvocacyStatus {
+  GENERATING
+  READY
+  SENDING
+  COMPLETE
+}
+
+model AdvocacyOutreach {
+  id                 String           @id @default(cuid())
+  packageId          String
+  targetName         String
+  targetRole         String
+  targetOrg          String
+  targetEmail        String
+  draftMessage       String?
+  status             OutreachStatus   @default(DRAFT)
+  approvedBy         String?
+  validatorNotes     String?
+  sentAt             DateTime?
+  responseReceivedAt DateTime?
+  updatedAt          DateTime         @updatedAt
+
+  package            AdvocacyPackage  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@index([packageId, status])
+  @@map("advocacy_outreach")
+}
+
+enum OutreachStatus {
+  QUEUED
+  DRAFT
+  APPROVED
+  SENT
+  RESPONDED
 }

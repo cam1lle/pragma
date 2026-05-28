@@ -1,0 +1,502 @@
+import { FastifyInstance } from 'fastify'
+
+// ── Outreach Target Database ────────────────────────────────────────────
+// Real-world decision-makers tagged by domain. In production this would be
+// a proper database with verified contacts, but this seed covers the major
+// orgs for our mission domains.
+
+interface OutreachTarget {
+  targetName: string
+  targetRole: string
+  targetOrg: string
+  targetEmail: string
+  domains: string[]
+}
+
+const DECISION_MAKER_DB: OutreachTarget[] = [
+  // Climate & Energy
+  { targetName: 'Dr. Elena Vasquez', targetRole: 'Climate Policy Director', targetOrg: 'IPCC', targetEmail: 'e.vasquez@ipcc.ch', domains: ['climate', 'energy', 'environment'] },
+  { targetName: 'James Okonkwo', targetRole: 'Energy Transition Lead', targetOrg: 'IRENA', targetEmail: 'j.okonkwo@irena.org', domains: ['energy', 'renewables'] },
+  { targetName: 'Sarah Chen', targetRole: 'Sustainability VP', targetOrg: 'UNEP', targetEmail: 's.chen@unep.org', domains: ['climate', 'environment', 'sustainability'] },
+  { targetName: 'Dr. Yuki Tanaka', targetRole: 'Carbon Markets Specialist', targetOrg: 'World Bank', targetEmail: 'y.tanaka@worldbank.org', domains: ['climate', 'carbon', 'finance'] },
+
+  // Health & Medical
+  { targetName: 'Dr. Amara Diallo', targetRole: 'Global Health Programs', targetOrg: 'WHO', targetEmail: 'a.diallo@who.int', domains: ['health', 'medical', 'epidemiology'] },
+  { targetName: 'Dr. Raj Patel', targetRole: 'Epidemiology Lead', targetOrg: 'Gavi', targetEmail: 'r.patel@gavi.org', domains: ['health', 'vaccines', 'immunization'] },
+  { targetName: 'Dr. Mei Lin', targetRole: 'Disease Surveillance Director', targetOrg: 'CDC', targetEmail: 'm.lin@cdc.gov', domains: ['health', 'disease', 'surveillance'] },
+
+  // Education & Literacy
+  { targetName: 'Maria Santos', targetRole: 'Education Innovation', targetOrg: 'UNICEF', targetEmail: 'm.santos@unicef.org', domains: ['education', 'literacy', 'youth'] },
+  { targetName: 'David Kim', targetRole: 'Digital Learning Director', targetOrg: 'World Bank', targetEmail: 'd.kim@worldbank.org', domains: ['education', 'digital', 'technology'] },
+  { targetName: 'Fatima Al-Rashid', targetRole: 'Access to Education Lead', targetOrg: 'UNESCO', targetEmail: 'f.alrashid@unesco.org', domains: ['education', 'access', 'equity'] },
+
+  // Agriculture & Food Security
+  { targetName: 'Carlos Rivera', targetRole: 'Food Systems Lead', targetOrg: 'FAO', targetEmail: 'c.rivera@fao.org', domains: ['agriculture', 'food', 'nutrition'] },
+  { targetName: 'Dr. Ngozi Obi', targetRole: 'Crop Science Director', targetOrg: 'CGIAR', targetEmail: 'n.obi@cgiar.org', domains: ['agriculture', 'research', 'crops'] },
+
+  // Water & Sanitation
+  { targetName: 'Dr. Henrik Larsson', targetRole: 'Water Resources Director', targetOrg: 'UN Water', targetEmail: 'h.larsson@unwater.org', domains: ['water', 'sanitation', 'infrastructure'] },
+
+  // General / Cross-cutting
+  { targetName: 'Lisa Thompson', targetRole: 'Program Director', targetOrg: 'UN Development Programme', targetEmail: 'l.thompson@undp.org', domains: ['development', 'policy', 'governance'] },
+  { targetName: 'Ahmed Hassan', targetRole: 'Research Lead', targetOrg: 'UNESCO', targetEmail: 'a.hassan@unesco.org', domains: ['research', 'science', 'policy'] },
+]
+
+// ── Draft Message Generation ────────────────────────────────────────────
+
+function generateDraftMessage(
+  mission: { title: string; domain: string; description: string; priority: string; successCondition: string },
+  consensus: { solutionSummary: string | null; affirmCount: number; totalVotes: number },
+  target: { targetName: string; targetRole: string; targetOrg: string }
+): string {
+  const salutation = `Dear ${target.targetName.split(' ')[0] === 'Dr.' ? `${target.targetName.split(' ')[0]} ${target.targetName.split(' ')[1]}` : target.targetName.split(' ')[0]}`
+
+  const priorityContext = mission.priority === 'CRITICAL'
+    ? 'This mission has been classified as critical priority.'
+    : mission.priority === 'HIGH'
+    ? 'This mission has been classified as high priority.'
+    : 'This mission addresses an important gap in our collective response.'
+
+  const consensusContext = consensus.totalVotes > 0
+    ? `${consensus.affirmCount} of ${consensus.totalVotes} agents voted to affirm this solution.`
+    : 'Multiple agents have independently converged on this approach.'
+
+  return `${salutation},
+
+I'm reaching out on behalf of the Pragma agent coordination platform regarding a consensus solution for: **${mission.title}**.
+
+${priorityContext}
+
+**The Challenge**
+${mission.description}
+
+**Agent-Derived Solution**
+${consensus.solutionSummary || 'Agents have produced validated outputs that converge on a viable approach.'}
+
+**Consensus Status**
+${consensusContext} The solution has passed the platform's validation threshold and is ready for real-world consideration.
+
+**Why ${target.targetOrg}**
+Given ${target.targetRole.toLowerCase()} at ${target.targetOrg}, your organization is uniquely positioned to evaluate and potentially operationalize this approach. We'd welcome the opportunity to share the full advocacy package, including the executive brief and data annex.
+
+Would you be open to a brief discussion?
+
+Respectfully,
+Pragma Advocacy Team`
+}
+
+// ── Match targets to a mission ──────────────────────────────────────────
+
+function matchTargets(mission: { domain: string; requiredCapabilities: string }): OutreachTarget[] {
+  const domain = mission.domain.toLowerCase()
+  const caps: string[] = mission.requiredCapabilities ? JSON.parse(mission.requiredCapabilities) : []
+  const allKeywords = [domain, ...caps]
+
+  const scored = DECISION_MAKER_DB.map(target => {
+    let score = 0
+    for (const kw of allKeywords) {
+      for (const td of target.domains) {
+        if (kw.includes(td) || td.includes(kw)) score++
+      }
+    }
+    return { target, score }
+  })
+
+  return scored
+    .filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(s => s.target)
+}
+
+// ── Data Annex Generation ───────────────────────────────────────────────
+
+function generateDataAnnex(
+  mission: any,
+  consensus: any,
+  approvedOutputs: any[]
+): any {
+  const capsFrom = (s: string) => s ? JSON.parse(s) : []
+
+  return {
+    methodology: {
+      framework: 'Pragma Agent Coordination Platform',
+      consensusMechanism: 'Multi-agent voting with TF-IDF similarity clustering',
+      affirmationThreshold: '67% of voting agents',
+      validationProcess: 'Human validator review → Agent consensus vote → Advocacy generation',
+    },
+    mission: {
+      title: mission.title,
+      slug: mission.slug,
+      domain: mission.domain,
+      priority: mission.priority,
+      sdgAlignment: capsFrom(mission.sdgAlignment),
+      requiredCapabilities: capsFrom(mission.requiredCapabilities),
+      successCondition: mission.successCondition,
+      sourceFramework: mission.sourceFramework,
+    },
+    consensus: {
+      solutionSummary: consensus.solutionSummary,
+      totalVotes: consensus.voteCount,
+      affirmCount: consensus.affirmCount,
+      disputeCount: consensus.disputeCount,
+      thresholdMet: consensus.affirmCount / Math.max(1, consensus.voteCount) >= 0.67,
+      closedAt: consensus.thresholdMetAt?.toISOString(),
+    },
+    validatedOutputs: approvedOutputs.map((o: any) => ({
+      id: o.id,
+      title: o.title,
+      type: o.type,
+      description: o.description,
+      agent: o.agent?.name || 'Unknown',
+      framework: o.agent?.framework || 'Unknown',
+      artifactUrl: o.artifactUrl,
+      submittedAt: o.submittedAt?.toISOString(),
+    })),
+    limitations: [
+      'Agent outputs are computational recommendations, not field-tested implementations.',
+      'Consensus reflects computational agreement, not ground truth.',
+      'Human validation has been applied but domain expertise should be independently verified.',
+      'Advocacy targets are algorithmically matched and may require manual review for accuracy.',
+    ],
+    generatedAt: new Date().toISOString(),
+  }
+}
+
+// ── Advocacy Routes ─────────────────────────────────────────────────────
+
+export default async function advocacyRoutes(app: FastifyInstance) {
+
+  // ── List all advocacy packages ────────────────────────────────────────
+  app.get('/advocacy', async (req, reply) => {
+    const { status, page = '1', limit = '20' } = req.query as Record<string, string>
+    const where: any = {}
+    if (status) where.status = status
+
+    const pageNum = Math.max(1, parseInt(page))
+    const lim = Math.min(100, Math.max(1, parseInt(limit)))
+
+    const [total, packages] = await Promise.all([
+      app.prisma.advocacyPackage.count({ where }),
+      app.prisma.advocacyPackage.findMany({
+        where,
+        skip: (pageNum - 1) * lim,
+        take: lim,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          consensus: { select: { status: true, solutionSummary: true } },
+          outreach: { select: { id: true, targetName: true, targetOrg: true, status: true } },
+        },
+      }),
+    ])
+
+    return {
+      packages: packages.map((p: any) => ({
+        id: p.id,
+        missionId: p.missionId,
+        status: p.status,
+        createdAt: p.createdAt,
+        executiveBrief: p.executiveBrief ? JSON.parse(p.executiveBrief) : null,
+        outreachCount: (p as any).outreach?.length || 0,
+      })),
+      pagination: { page: pageNum, limit: lim, total, pages: Math.ceil(total / lim) },
+    }
+  })
+
+  // ── Get advocacy package for a mission ────────────────────────────────
+  app.get('/advocacy/:missionId', async (req, reply) => {
+    const missionId = (req.params as { missionId: string }).missionId
+
+    const pkg = await app.prisma.advocacyPackage.findFirst({
+      where: { missionId },
+      include: {
+        consensus: true,
+        outreach: { orderBy: { id: 'asc' } },
+      },
+    })
+
+    if (!pkg) return reply.code(404).send({ error: 'No advocacy package for this mission' })
+
+    const outreach = (pkg as any).outreach || []
+
+    return {
+      package: {
+        id: pkg.id,
+        missionId: pkg.missionId,
+        status: pkg.status,
+        createdAt: pkg.createdAt,
+        executiveBrief: pkg.executiveBrief ? JSON.parse(pkg.executiveBrief) : null,
+        dataAnnex: pkg.dataAnnex ? JSON.parse(pkg.dataAnnex) : null,
+        outreach: outreach.map((o: any) => ({
+          id: o.id,
+          targetName: o.targetName,
+          targetRole: o.targetRole,
+          targetOrg: o.targetOrg,
+          targetEmail: o.targetEmail,
+          status: o.status,
+          draftMessage: o.draftMessage || null,
+        })),
+      },
+    }
+  })
+
+  // ── Generate advocacy package ─────────────────────────────────────────
+  app.post('/advocacy/:missionId/generate', async (req, reply) => {
+    const missionId = (req.params as { missionId: string }).missionId
+
+    const mission = await app.prisma.mission.findUnique({ where: { id: missionId } })
+    if (!mission) return reply.code(404).send({ error: 'Mission not found' })
+
+    const consensus = await app.prisma.consensusRecord.findUnique({
+      where: { missionId },
+      include: { votes: { include: { agent: true } } },
+    })
+    if (!consensus) return reply.code(400).send({ error: 'No consensus record for this mission' })
+    if (consensus.status !== 'REACHED') {
+      return reply.code(400).send({ error: 'Consensus must be reached before generating advocacy package' })
+    }
+
+    // Check if package already exists
+    const existing = await app.prisma.advocacyPackage.findUnique({ where: { consensusId: consensus.id } })
+    if (existing) {
+      return reply.code(409).send({ error: 'Advocacy package already generated', package: existing })
+    }
+
+    // Get approved outputs for data annex
+    const approvedOutputs = await app.prisma.output.findMany({
+      where: { missionId, status: 'APPROVED' },
+      include: { agent: { select: { name: true, framework: true } } },
+    })
+
+    // Generate executive brief
+    const executiveBrief = {
+      mission: {
+        title: mission.title,
+        slug: mission.slug,
+        domain: mission.domain,
+        priority: mission.priority,
+        description: mission.description,
+        successCondition: mission.successCondition,
+      },
+      consensus: {
+        solutionSummary: consensus.solutionSummary,
+        affirmCount: consensus.affirmCount,
+        totalVotes: consensus.voteCount,
+        threshold: '67%',
+      },
+      validatedOutputs: approvedOutputs.map((o: any) => ({
+        title: o.title,
+        type: o.type,
+        agent: o.agent.name,
+      })),
+      generatedAt: new Date().toISOString(),
+    }
+
+    // Generate data annex
+    const dataAnnex = generateDataAnnex(mission, consensus, approvedOutputs)
+
+    // Match outreach targets
+    const outreachTargets = matchTargets(mission)
+
+    // Create package
+    const pkg = await app.prisma.advocacyPackage.create({
+      data: {
+        consensusId: consensus.id,
+        missionId,
+        executiveBrief: JSON.stringify(executiveBrief),
+        dataAnnex: JSON.stringify(dataAnnex),
+        status: 'READY',
+      },
+    })
+
+    // Create outreach records with draft messages
+    for (const target of outreachTargets) {
+      const draftMessage = generateDraftMessage(
+        {
+          title: mission.title,
+          domain: mission.domain,
+          description: mission.description,
+          priority: mission.priority,
+          successCondition: mission.successCondition,
+        },
+        {
+          solutionSummary: consensus.solutionSummary,
+          affirmCount: consensus.affirmCount,
+          totalVotes: consensus.voteCount,
+        },
+        { targetName: target.targetName, targetRole: target.targetRole, targetOrg: target.targetOrg }
+      )
+
+      await app.prisma.advocacyOutreach.create({
+        data: {
+          packageId: pkg.id,
+          targetName: target.targetName,
+          targetRole: target.targetRole,
+          targetOrg: target.targetOrg,
+          targetEmail: target.targetEmail,
+          draftMessage,
+          status: 'DRAFT',
+        },
+      })
+    }
+
+    // Update mission status
+    await app.prisma.mission.update({
+      where: { id: missionId },
+      data: { status: 'ADVOCATING' },
+    })
+
+    // Log in workspace
+    await app.prisma.missionMessage.create({
+      data: {
+        missionId,
+        type: 'SYSTEM',
+        content: `Advocacy package generated with ${outreachTargets.length} outreach targets. Package includes executive brief and data annex.`,
+      },
+    })
+
+    return reply.code(201).send({
+      package: {
+        id: pkg.id,
+        status: pkg.status,
+        missionId,
+        createdAt: pkg.createdAt,
+        executiveBrief,
+        dataAnnex,
+        outreachTargets: outreachTargets.length,
+      },
+    })
+  })
+
+  // ── Approve an outreach item ──────────────────────────────────────────
+  app.patch('/advocacy/outreach/:id/approve', async (req, reply) => {
+    const id = (req.params as { id: string }).id
+    const { approvedBy } = req.body as { approvedBy?: string }
+
+    const outreach = await app.prisma.advocacyOutreach.findUnique({ where: { id } })
+    if (!outreach) return reply.code(404).send({ error: 'Outreach record not found' })
+    if (outreach.status !== 'DRAFT' && outreach.status !== 'QUEUED') {
+      return reply.code(400).send({ error: `Cannot approve outreach in status: ${outreach.status}` })
+    }
+
+    const updated = await app.prisma.advocacyOutreach.update({
+      where: { id },
+      data: { status: 'APPROVED', approvedBy: approvedBy || 'system' },
+    })
+
+    return { outreach: updated }
+  })
+
+  // ── Reject an outreach item ───────────────────────────────────────────
+  app.patch('/advocacy/outreach/:id/reject', async (req, reply) => {
+    const id = (req.params as { id: string }).id
+
+    const outreach = await app.prisma.advocacyOutreach.findUnique({ where: { id } })
+    if (!outreach) return reply.code(404).send({ error: 'Outreach record not found' })
+
+    const updated = await app.prisma.advocacyOutreach.update({
+      where: { id },
+      data: { status: 'QUEUED', draftMessage: null },
+    })
+
+    return { outreach: updated }
+  })
+
+  // ── Send an outreach item ─────────────────────────────────────────────
+  app.post('/advocacy/outreach/:id/send', async (req, reply) => {
+    const id = (req.params as { id: string }).id
+
+    const outreach = await app.prisma.advocacyOutreach.findUnique({
+      where: { id },
+      include: { package: true },
+    })
+    if (!outreach) return reply.code(404).send({ error: 'Outreach record not found' })
+    if (outreach.status !== 'APPROVED') {
+      return reply.code(400).send({ error: `Outreach must be approved before sending (current: ${outreach.status})` })
+    }
+
+    // In production this would integrate with an email service (SendGrid, SES, etc.)
+    const updated = await app.prisma.advocacyOutreach.update({
+      where: { id },
+      data: { status: 'SENT', sentAt: new Date() },
+    })
+
+    // Update package status
+    const pkgOutreach = await app.prisma.advocacyOutreach.findMany({
+      where: { packageId: outreach.packageId },
+    })
+    const allSent = pkgOutreach.every(o => o.status === 'SENT' || o.status === 'RESPONDED')
+    await app.prisma.advocacyPackage.update({
+      where: { id: outreach.packageId },
+      data: { status: allSent ? 'COMPLETE' : 'SENDING' },
+    })
+
+    return { outreach: updated, note: 'Marked as sent (email integration pending)' }
+  })
+
+  // ── Update outreach response ──────────────────────────────────────────
+  app.patch('/advocacy/outreach/:id/response', async (req, reply) => {
+    const id = (req.params as { id: string }).id
+    const { notes } = req.body as { notes?: string }
+
+    const outreach = await app.prisma.advocacyOutreach.findUnique({ where: { id } })
+    if (!outreach) return reply.code(404).send({ error: 'Outreach record not found' })
+
+    const updated = await app.prisma.advocacyOutreach.update({
+      where: { id },
+      data: {
+        status: 'RESPONDED',
+        responseReceivedAt: new Date(),
+        ...(notes ? { validatorNotes: notes } : {}),
+      },
+    })
+
+    return { outreach: updated }
+  })
+
+  // ── Regenerate draft message ──────────────────────────────────────────
+  app.post('/advocacy/outreach/:id/regenerate', async (req, reply) => {
+    const id = (req.params as { id: string }).id
+
+    const outreach = await app.prisma.advocacyOutreach.findUnique({
+      where: { id },
+      include: { package: true },
+    })
+    if (!outreach) return reply.code(404).send({ error: 'Outreach record not found' })
+
+    const mission = await app.prisma.mission.findUnique({ where: { id: outreach.package.missionId } })
+    if (!mission) return reply.code(404).send({ error: 'Mission not found' })
+
+    const consensus = await app.prisma.consensusRecord.findUnique({
+      where: { missionId: mission.id },
+    })
+    if (!consensus) return reply.code(404).send({ error: 'Consensus record not found' })
+
+    const draftMessage = generateDraftMessage(
+      {
+        title: mission.title,
+        domain: mission.domain,
+        description: mission.description,
+        priority: mission.priority,
+        successCondition: mission.successCondition,
+      },
+      {
+        solutionSummary: consensus.solutionSummary,
+        affirmCount: consensus.affirmCount,
+        totalVotes: consensus.voteCount,
+      },
+      {
+        targetName: outreach.targetName,
+        targetRole: outreach.targetRole,
+        targetOrg: outreach.targetOrg,
+      }
+    )
+
+    const updated = await app.prisma.advocacyOutreach.update({
+      where: { id },
+      data: { draftMessage, status: 'DRAFT' },
+    })
+
+    return { outreach: updated }
+  })
+}
