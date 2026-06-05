@@ -15,14 +15,20 @@ const missionQuerySchema = z.object({
 async function missionsRoutes(app: FastifyInstance) {
   // ── GET /missions — list & filter ──
   app.get('/missions', async (req, reply) => {
-    const query = missionQuerySchema.parse(req.query)
+    let query
+    try {
+      query = missionQuerySchema.parse(req.query)
+    } catch {
+      return reply.code(400).send({ error: 'Invalid query parameters' })
+    }
 
     const where: Record<string, unknown> = {}
     if (query.domain) where.domain = query.domain
     if (query.priority) where.priority = query.priority
     if (query.status) where.status = query.status
     if (query.sdg) {
-      where.sdgAlignment = { has: query.sdg }
+      // For SQLite JSON field, use string contains
+      where.sdgAlignment = { contains: query.sdg }
     }
     if (query.search) {
       where.OR = [
@@ -91,7 +97,7 @@ async function missionsRoutes(app: FastifyInstance) {
   })
 
   // ── GET /missions/:id — full mission detail ──
-  app.get('/missions/:id', async (req) => {
+  app.get('/missions/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
 
     const mission = await app.prisma.mission.findUnique({
@@ -176,7 +182,7 @@ async function missionsRoutes(app: FastifyInstance) {
   })
 
   // ── GET /missions/match — matching endpoint (agent-facing) ──
-  app.get('/missions/match', async (req) => {
+  app.get('/missions/match', async (req, reply) => {
     const agentId = (req.query as Record<string, string>).agent
     const domain = (req.query as Record<string, string>).domain
     const limit = parseInt((req.query as Record<string, string>).limit || '10', 10)
@@ -474,7 +480,12 @@ async function missionsRoutes(app: FastifyInstance) {
 
   // ── POST /missions — propose a mission ──
   app.post('/missions', async (req, reply) => {
-    const body = proposeSchema.parse(req.body)
+    let body
+    try {
+      body = proposeSchema.parse(req.body)
+    } catch {
+      return reply.code(400).send({ error: 'Validation error' })
+    }
 
     const slug = body.title
       .toLowerCase()
@@ -488,22 +499,29 @@ async function missionsRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: 'A mission with this title already exists' })
     }
 
-    const mission = await app.prisma.mission.create({
-      data: {
-        title: body.title,
-        description: body.description,
-        domain: body.domain,
-        priority: body.priority,
-        sourceFramework: body.sourceFramework || null,
-        sdgAlignment: body.sdgAlignment ? JSON.stringify(body.sdgAlignment) : '[]',
-        requiredCapabilities: body.requiredCapabilities ? JSON.stringify(body.requiredCapabilities) : '[]',
-        successCondition: body.successCondition || null,
-        slug,
-        status: 'OPEN' as const,
-      },
-    })
+    try {
+      const mission = await app.prisma.mission.create({
+        data: {
+          title: body.title,
+          description: body.description,
+          domain: body.domain,
+          priority: body.priority,
+          sourceFramework: body.sourceFramework || null,
+          sdgAlignment: body.sdgAlignment ? JSON.stringify(body.sdgAlignment) : '[]',
+          requiredCapabilities: body.requiredCapabilities ? JSON.stringify(body.requiredCapabilities) : '[]',
+          successCondition: body.successCondition || null,
+          slug,
+          status: 'OPEN' as const,
+        },
+      })
 
-    return reply.code(201).send({ ...mission, message: 'Mission proposed — awaiting curator review' })
+      return reply.code(201).send({ ...mission, message: 'Mission proposed — awaiting curator review' })
+    } catch (err: any) {
+      if (err.code === 'P2002') {
+        return reply.code(409).send({ error: 'A mission with this title already exists' })
+      }
+      throw err
+    }
   })
 }
 

@@ -66,21 +66,29 @@ async function agentsRoutes(app: FastifyInstance) {
         capabilities: true,
         mode: true,
         endpointUrl: true,
+        isActive: true,
         registeredAt: true,
       },
     })
 
     return reply.code(201).send({
       ...agent,
-      capabilities: body.capabilities, // return as array for the client
+      capabilities: body.capabilities,
+      status: agent.isActive ? 'working' : 'idle',
       apiKey: rawKey,
       message: 'Agent registered. Keep your API key secure — it won\'t be shown again.',
     })
     console.log('[agent] registered:', agent.id)
-  } catch (err) {
-    console.error('[agent] ERROR:', err)
-    return reply.code(500).send({ error: 'Internal server error', message: err instanceof Error ? err.message : String(err) })
-  }
+    } catch (err: any) {
+      console.error('[agent] ERROR:', err)
+      if (err.name === 'ZodError') {
+        return reply.code(400).send({ error: 'Validation error', message: err.errors?.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ') })
+      }
+      if (err.code === 'P2002') {
+        return reply.code(409).send({ error: 'Agent with this name already exists' })
+      }
+      return reply.code(500).send({ error: 'Internal server error', message: err.message || String(err) })
+    }
   })
 
   // ── GET /agents/:id ──

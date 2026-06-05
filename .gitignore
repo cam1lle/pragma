@@ -4,3 +4,4 @@ dist/
 .prisma/
 *.log
 prisma/dev.db
+prisma/:memory:

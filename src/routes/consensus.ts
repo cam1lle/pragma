@@ -132,14 +132,14 @@ async function consensusRoutes(app: FastifyInstance) {
         dispute: record.disputeCount,
         threshold: 85,
         met: record.thresholdMetAt !== null,
+        details: record.votes.map(v => ({
+          agentId: v.agent.id,
+          agentName: v.agent.name,
+          vote: v.vote,
+          reasoning: v.reasoning,
+          castAt: v.castAt,
+        })),
       },
-      details: record.votes.map(v => ({
-        agentId: v.agent.id,
-        agentName: v.agent.name,
-        vote: v.vote,
-        reasoning: v.reasoning,
-        castAt: v.castAt,
-      })),
     }
   })
 
@@ -240,13 +240,27 @@ async function consensusRoutes(app: FastifyInstance) {
 
       const record = await app.prisma.consensusRecord.findUnique({
         where: { missionId },
+        include: { votes: { include: { agent: { select: { name: true } } } } },
       })
 
       if (!record) {
         return reply.code(404).send({ error: 'No consensus found for this mission' })
       }
       if (record.status !== 'VOTING') {
-        return reply.code(409).send({ error: `Consensus already ended (status: ${record.status})` })
+        // Already closed (auto-closed or previously closed) — return current state
+        const totalVotes = record.voteCount
+        const percentAffirm = totalVotes > 0 ? Math.round((record.affirmCount / totalVotes) * 100) : 0
+        return reply.code(200).send({
+          message: `Consensus already ${record.status.toLowerCase()}`,
+          status: record.status,
+          votes: {
+            total: totalVotes,
+            affirm: record.affirmCount,
+            dispute: record.disputeCount,
+            abstain: totalVotes - record.affirmCount - record.disputeCount,
+            percentage: percentAffirm,
+          },
+        })
       }
 
       const result = await closeConsensusRound(app, missionId)
@@ -347,18 +361,18 @@ async function consensusRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: `Consensus has ended (status: ${record.status})` })
       }
 
-      // Check if agent already voted
-      const existingVote = record.votes.find(v => v.agentId === agent.id)
-      if (existingVote) {
-        return reply.code(409).send({ error: 'Agent has already voted in this consensus' })
-      }
-
       // Verify agent is assigned to the mission
       const assignment = await app.prisma.assignment.findFirst({
         where: { missionId, agentId: agent.id, status: 'ACTIVE' },
       })
       if (!assignment) {
         return reply.code(403).send({ error: 'Agent is not assigned to this mission' })
+      }
+
+      // Check if agent already voted
+      const existingVote = record.votes.find(v => v.agentId === agent.id)
+      if (existingVote) {
+        return reply.code(409).send({ error: 'Agent has already voted in this consensus' })
       }
 
       // Cast vote
@@ -381,10 +395,10 @@ async function consensusRoutes(app: FastifyInstance) {
         },
       })
 
-      // Check if threshold is met
+      // Check if threshold is met (require ≥2 votes to avoid premature closure)
       const totalVotes = record.voteCount + 1
       const affirmVotes = body.vote === 'AFFIRM' ? record.affirmCount + 1 : record.affirmCount
-      const thresholdMet = totalVotes > 0 && (affirmVotes / totalVotes) * 100 >= 85
+      const thresholdMet = totalVotes >= 2 && (affirmVotes / totalVotes) * 100 >= 85
 
       if (thresholdMet) {
         await app.prisma.consensusRecord.update({

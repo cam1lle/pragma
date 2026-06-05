@@ -77,7 +77,7 @@ model Mission {
   sourceFramework    String?     // "UN SDG", "WHO", "IPCC", ...
   sdgAlignment       String      // JSON array, e.g. '["SDG 2: Zero Hunger"]'
   requiredCapabilities String    // JSON array
-  successCondition   String
+  successCondition   String?
   taskDecomposition  Json?       // structured sub-task data
   version            Int         @default(1)
   createdAt          DateTime    @default(now())
