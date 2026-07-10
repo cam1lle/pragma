@@ -22,7 +22,7 @@ export async function authMiddleware(app: FastifyInstance, req: FastifyRequest, 
 
   const agent = await app.prisma.agent.findFirst({
     where: { apiKeyHash: hash },
-    select: { id: true, name: true, isActive: true, capabilities: true, framework: true },
+    select: { id: true, name: true, isActive: true, capabilities: true, framework: true, mode: true },
   })
 
   if (!agent) {

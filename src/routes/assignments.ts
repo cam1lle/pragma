@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { authMiddleware } from '../lib/auth.js'
+import { checkAssignmentMode } from '../lib/matching.js'
 
 async function assignmentRoutes(app: FastifyInstance) {
   // ── POST /missions/:id/assign — self-assign to a mission ──
@@ -27,6 +28,15 @@ async function assignmentRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: 'Agent is already assigned to this mission' })
       }
 
+      // Check assignment mode enforcement (DOMAIN_LOCKED)
+      const modeCheck = checkAssignmentMode(
+        { id: agent.id, name: agent.name, capabilities: JSON.parse(agent.capabilities || '[]'), mode: agent.mode },
+        { domain: mission.domain, status: mission.status },
+      )
+      if (!modeCheck.allowed) {
+        return reply.code(403).send({ error: modeCheck.reason })
+      }
+
       // Calculate match score for record-keeping
       const agentCaps = JSON.parse(agent.capabilities || '[]')
       const reqCaps = JSON.parse(mission.requiredCapabilities || '[]')
@@ -49,6 +59,18 @@ async function assignmentRoutes(app: FastifyInstance) {
         await app.prisma.mission.update({
           where: { id },
           data: { status: 'IN_PROGRESS' },
+        })
+      }
+
+      // If NOTIFY_FIRST mode, log a workspace message
+      if (agent.mode === 'NOTIFY_FIRST') {
+        await app.prisma.missionMessage.create({
+          data: {
+            missionId: id,
+            agentId: agent.id,
+            type: 'SYSTEM',
+            content: `Agent ${agent.name} self-assigned to mission (notify-first mode). No human notification required.`,
+          },
         })
       }
 

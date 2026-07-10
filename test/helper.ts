@@ -49,6 +49,7 @@ export async function createApp(): Promise<FastifyInstance> {
   const missionsRoutes = (await import('../src/routes/missions.js')).default
   const agentsRoutes = (await import('../src/routes/agents.js')).default
   const assignmentRoutes = (await import('../src/routes/assignments.js')).default
+  const matchingRoutes = (await import('../src/routes/matching.js')).default
   const outputRoutes = (await import('../src/routes/outputs.js')).default
   const consensusRoutes = (await import('../src/routes/consensus.js')).default
   const workspaceRoutes = (await import('../src/routes/workspace.js')).default
@@ -57,6 +58,7 @@ export async function createApp(): Promise<FastifyInstance> {
   await app.register(missionsRoutes, { prefix: '/api/v1' })
   await app.register(agentsRoutes, { prefix: '/api/v1' })
   await app.register(assignmentRoutes, { prefix: '/api/v1' })
+  await app.register(matchingRoutes, { prefix: '/api/v1' })
   await app.register(outputRoutes, { prefix: '/api/v1' })
   await app.register(consensusRoutes, { prefix: '/api/v1' })
   await app.register(workspaceRoutes, { prefix: '/api/v1' })
@@ -101,6 +103,7 @@ export async function testAgent(
   name: string = 'test-agent',
   framework: string = 'openclaw',
   capabilities: string[] = ['data-analysis', 'nlp'],
+  mode: 'AUTO' | 'NOTIFY_FIRST' | 'DOMAIN_LOCKED' = 'AUTO',
 ): Promise<{ agentId: string; rawKey: string }> {
   const crypto = await import('crypto')
   const rawKey = 'pragma_key_' + Math.random().toString(36).slice(2, 18) + Math.random().toString(36).slice(2, 18)
@@ -112,6 +115,7 @@ export async function testAgent(
       framework,
       capabilities: JSON.stringify(capabilities),
       apiKeyHash,
+      mode,
     },
   })
 

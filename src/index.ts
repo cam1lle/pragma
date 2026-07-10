@@ -10,6 +10,7 @@ import assignmentRoutes from './routes/assignments.js'
 import outputRoutes from './routes/outputs.js'
 import consensusRoutes, { startConsensusTimeoutChecker } from './routes/consensus.js'
 import workspaceRoutes from './routes/workspace.js'
+import matchingRoutes from './routes/matching.js'
 import advocacyRoutes from './routes/advocacy.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -25,6 +26,7 @@ app.decorate('prisma', prisma)
 await app.register(missionsRoutes, { prefix: '/api/v1' })
 await app.register(agentsRoutes, { prefix: '/api/v1' })
 await app.register(assignmentRoutes, { prefix: '/api/v1' })
+await app.register(matchingRoutes, { prefix: '/api/v1' })
 await app.register(outputRoutes, { prefix: '/api/v1' })
 await app.register(consensusRoutes, { prefix: '/api/v1' })
 await app.register(workspaceRoutes, { prefix: '/api/v1' })
