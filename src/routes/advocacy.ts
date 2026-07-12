@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify'
+import { packageToPDFPayload, generateAdvocacyPDF } from '../services/pdf-generator.js'
 
 // ── Outreach Target Database ────────────────────────────────────────────
 // Real-world decision-makers tagged by domain. In production this would be
@@ -452,6 +453,40 @@ export default async function advocacyRoutes(app: FastifyInstance) {
     })
 
     return { outreach: updated }
+  })
+
+  // ── Download advocacy package as PDF ──────────────────────────────────
+  app.get('/advocacy/:missionId/pdf', async (req, reply) => {
+    const missionId = (req.params as { missionId: string }).missionId
+
+    const pkg = await app.prisma.advocacyPackage.findFirst({
+      where: { missionId },
+      include: { outreach: { orderBy: { id: 'asc' } } },
+    })
+
+    if (!pkg) return reply.code(404).send({ error: 'No advocacy package for this mission' })
+
+    const payload = packageToPDFPayload(
+      { executiveBrief: pkg.executiveBrief, dataAnnex: pkg.dataAnnex, missionId },
+      (pkg as any).outreach.map((o: any) => ({
+        targetName: o.targetName,
+        targetRole: o.targetRole,
+        targetOrg: o.targetOrg,
+        status: o.status,
+      }))
+    )
+
+    if (!payload) return reply.code(400).send({ error: 'Package missing required data (executive brief or data annex)' })
+
+    try {
+      const pdfBuffer = await generateAdvocacyPDF(payload)
+      return reply
+        .header('Content-Type', 'application/pdf')
+        .header('Content-Disposition', `attachment; filename="pragma-${pkg.status.toLowerCase()}-${missionId}.pdf"`)
+        .send(pdfBuffer)
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed to generate PDF', details: (err as Error).message })
+    }
   })
 
   // ── Regenerate draft message ──────────────────────────────────────────
