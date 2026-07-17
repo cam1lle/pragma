@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { packageToPDFPayload, generateAdvocacyPDF } from '../services/pdf-generator.js'
+import { emailService } from '../services/email-service.js'
 
 // ── Outreach Target Database ────────────────────────────────────────────
 // Real-world decision-makers tagged by domain. In production this would be
@@ -416,7 +417,17 @@ export default async function advocacyRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: `Outreach must be approved before sending (current: ${outreach.status})` })
     }
 
-    // In production this would integrate with an email service (SendGrid, SES, etc.)
+    // Send email via email service
+    const emailSent = await emailService.sendEmail({
+      to: outreach.targetEmail,
+      subject: `Advocacy Outreach: ${outreach.package?.missionId}`,
+      text: outreach.draftMessage,
+    })
+
+    if (!emailSent) {
+      return reply.code(500).send({ error: 'Failed to send email' })
+    }
+
     const updated = await app.prisma.advocacyOutreach.update({
       where: { id },
       data: { status: 'SENT', sentAt: new Date() },
@@ -432,7 +443,7 @@ export default async function advocacyRoutes(app: FastifyInstance) {
       data: { status: allSent ? 'COMPLETE' : 'SENDING' },
     })
 
-    return { outreach: updated, note: 'Marked as sent (email integration pending)' }
+    return { outreach: updated }
   })
 
   // ── Update outreach response ──────────────────────────────────────────

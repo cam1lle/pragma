@@ -46,11 +46,17 @@ async function missionsRoutes(app: FastifyInstance) {
         skip: query.offset,
         orderBy: { createdAt: 'desc' },
         include: {
+          tasks: true,
+          tasksTotal: {
+            _count: {},
+          },
+          tasksCompleted: {
+            _count: { where: { status: 'COMPLETE' } },
+          },
           _count: {
             select: {
               outputs: true,
               assignments: true,
-              tasks: true,
             },
           },
           curator: {
@@ -81,8 +87,8 @@ async function missionsRoutes(app: FastifyInstance) {
         createdAt: m.createdAt,
         updatedAt: m.updatedAt,
         progress: {
-          tasksTotal: m._count.tasks,
-          tasksComplete: m._count.tasks, // TODO: filter by status
+          tasksTotal: m.tasksTotal._count,
+          tasksComplete: m.tasksCompleted._count,
           outputsTotal: m._count.outputs,
           assignmentsTotal: m._count.assignments,
         },
@@ -225,8 +231,19 @@ async function missionsRoutes(app: FastifyInstance) {
       },
     })
 
+    // Get assignment counts for each mission
+    const missionIds = missions.map(m => m.id)
+    const assignmentCounts = await Promise.all(
+      missionIds.map(id =>
+        app.prisma.assignment.count({ where: { missionId: id, status: 'ACTIVE' } })
+      )
+    )
+    const countsMap = Object.fromEntries(
+      missionIds.map((id, i) => [id, assignmentCounts[i]])
+    )
+
     // Scoring algorithm
-    const scored = missions.map(m => {
+    const scored = missions.map((m, index) => {
       const caps = JSON.parse(m.requiredCapabilities || '[]')
 
       // capability overlap (0-50 pts)
@@ -238,7 +255,7 @@ async function missionsRoutes(app: FastifyInstance) {
       const urgencyScore = priorityPts[m.priority as keyof typeof priorityPts] || 10
 
       // coverage gap (0-20 pts) — fewer assignments = more unserved
-      const assignedCount = 0 // TODO: query assignments count
+      const assignedCount = countsMap[m.id] ?? 0
       const coverageGapScore = assignedCount === 0 ? 20 : Math.max(0, 20 - assignedCount * 5)
 
       // specialization bonus (0-10 pts) — rare caps the mission needs
