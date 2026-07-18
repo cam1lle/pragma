@@ -130,6 +130,39 @@ export function authHeader(rawKey: string): string {
 }
 
 /**
+ * Seed decision-makers for advocacy tests.
+ */
+export async function seedDecisionMakers(
+  app: FastifyInstance,
+  count: number = 5,
+): Promise<any[]> {
+  const dms = [
+    { name: 'Dr. Elena Vasquez', role: 'Climate Policy Director', org: 'IPCC', email: 'e.vasquez@ipcc.ch', domains: JSON.stringify(['climate', 'energy', 'environment']), orgType: 'UN', seniority: 'DIRECTOR' },
+    { name: 'Sarah Chen', role: 'Sustainability VP', org: 'UNEP', email: 's.chen@unep.org', domains: JSON.stringify(['climate', 'environment', 'sustainability']), orgType: 'UN', seniority: 'EXECUTIVE' },
+    { name: 'Carlos Rivera', role: 'Food Systems Lead', org: 'FAO', email: 'c.rivera@fao.org', domains: JSON.stringify(['agriculture', 'food', 'nutrition']), orgType: 'UN', seniority: 'DIRECTOR' },
+    { name: 'Dr. Amara Diallo', role: 'Global Health Programs', org: 'WHO', email: 'a.diallo@who.int', domains: JSON.stringify(['health', 'medical', 'epidemiology']), orgType: 'UN', seniority: 'DIRECTOR' },
+    { name: 'Lisa Thompson', role: 'Program Director', org: 'UN Development Programme', email: 'l.thompson@undp.org', domains: JSON.stringify(['development', 'policy', 'governance']), orgType: 'UN', seniority: 'DIRECTOR' },
+  ]
+  const created: any[] = []
+  for (const dm of dms.slice(0, count)) {
+    const existing = await app.prisma.decisionMaker.findFirst({
+      where: { email: dm.email },
+    })
+    if (existing) {
+      await app.prisma.decisionMaker.update({
+        where: { id: existing.id },
+        data: { verified: true, updatedAt: new Date() },
+      })
+      created.push({ ...existing, verified: true })
+    } else {
+      const dm2 = await app.prisma.decisionMaker.create({ data: { ...dm, verified: true } })
+      created.push(dm2)
+    }
+  }
+  return created
+}
+
+/**
  * Create a mission with optional tasks.
  */
 export async function createMission(

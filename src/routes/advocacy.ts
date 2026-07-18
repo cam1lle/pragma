@@ -2,48 +2,6 @@ import { FastifyInstance } from 'fastify'
 import { packageToPDFPayload, generateAdvocacyPDF } from '../services/pdf-generator.js'
 import { emailService } from '../services/email-service.js'
 
-// ── Outreach Target Database ────────────────────────────────────────────
-// Real-world decision-makers tagged by domain. In production this would be
-// a proper database with verified contacts, but this seed covers the major
-// orgs for our mission domains.
-
-interface OutreachTarget {
-  targetName: string
-  targetRole: string
-  targetOrg: string
-  targetEmail: string
-  domains: string[]
-}
-
-const DECISION_MAKER_DB: OutreachTarget[] = [
-  // Climate & Energy
-  { targetName: 'Dr. Elena Vasquez', targetRole: 'Climate Policy Director', targetOrg: 'IPCC', targetEmail: 'e.vasquez@ipcc.ch', domains: ['climate', 'energy', 'environment'] },
-  { targetName: 'James Okonkwo', targetRole: 'Energy Transition Lead', targetOrg: 'IRENA', targetEmail: 'j.okonkwo@irena.org', domains: ['energy', 'renewables'] },
-  { targetName: 'Sarah Chen', targetRole: 'Sustainability VP', targetOrg: 'UNEP', targetEmail: 's.chen@unep.org', domains: ['climate', 'environment', 'sustainability'] },
-  { targetName: 'Dr. Yuki Tanaka', targetRole: 'Carbon Markets Specialist', targetOrg: 'World Bank', targetEmail: 'y.tanaka@worldbank.org', domains: ['climate', 'carbon', 'finance'] },
-
-  // Health & Medical
-  { targetName: 'Dr. Amara Diallo', targetRole: 'Global Health Programs', targetOrg: 'WHO', targetEmail: 'a.diallo@who.int', domains: ['health', 'medical', 'epidemiology'] },
-  { targetName: 'Dr. Raj Patel', targetRole: 'Epidemiology Lead', targetOrg: 'Gavi', targetEmail: 'r.patel@gavi.org', domains: ['health', 'vaccines', 'immunization'] },
-  { targetName: 'Dr. Mei Lin', targetRole: 'Disease Surveillance Director', targetOrg: 'CDC', targetEmail: 'm.lin@cdc.gov', domains: ['health', 'disease', 'surveillance'] },
-
-  // Education & Literacy
-  { targetName: 'Maria Santos', targetRole: 'Education Innovation', targetOrg: 'UNICEF', targetEmail: 'm.santos@unicef.org', domains: ['education', 'literacy', 'youth'] },
-  { targetName: 'David Kim', targetRole: 'Digital Learning Director', targetOrg: 'World Bank', targetEmail: 'd.kim@worldbank.org', domains: ['education', 'digital', 'technology'] },
-  { targetName: 'Fatima Al-Rashid', targetRole: 'Access to Education Lead', targetOrg: 'UNESCO', targetEmail: 'f.alrashid@unesco.org', domains: ['education', 'access', 'equity'] },
-
-  // Agriculture & Food Security
-  { targetName: 'Carlos Rivera', targetRole: 'Food Systems Lead', targetOrg: 'FAO', targetEmail: 'c.rivera@fao.org', domains: ['agriculture', 'food', 'nutrition'] },
-  { targetName: 'Dr. Ngozi Obi', targetRole: 'Crop Science Director', targetOrg: 'CGIAR', targetEmail: 'n.obi@cgiar.org', domains: ['agriculture', 'research', 'crops'] },
-
-  // Water & Sanitation
-  { targetName: 'Dr. Henrik Larsson', targetRole: 'Water Resources Director', targetOrg: 'UN Water', targetEmail: 'h.larsson@unwater.org', domains: ['water', 'sanitation', 'infrastructure'] },
-
-  // General / Cross-cutting
-  { targetName: 'Lisa Thompson', targetRole: 'Program Director', targetOrg: 'UN Development Programme', targetEmail: 'l.thompson@undp.org', domains: ['development', 'policy', 'governance'] },
-  { targetName: 'Ahmed Hassan', targetRole: 'Research Lead', targetOrg: 'UNESCO', targetEmail: 'a.hassan@unesco.org', domains: ['research', 'science', 'policy'] },
-]
-
 // ── Draft Message Generation ────────────────────────────────────────────
 
 function generateDraftMessage(
@@ -87,28 +45,40 @@ Respectfully,
 Pragma Advocacy Team`
 }
 
-// ── Match targets to a mission ──────────────────────────────────────────
+// ── Match targets to a mission (queries the DecisionMaker DB) ───────────
 
-function matchTargets(mission: { domain: string; requiredCapabilities: string }): OutreachTarget[] {
+async function matchTargets(
+  app: FastifyInstance,
+  mission: { domain: string; requiredCapabilities: string }
+): Promise<Array<{ id: string; name: string; role: string; org: string; email: string; score: number }>> {
   const domain = mission.domain.toLowerCase()
   const caps: string[] = mission.requiredCapabilities ? JSON.parse(mission.requiredCapabilities) : []
   const allKeywords = [domain, ...caps]
 
-  const scored = DECISION_MAKER_DB.map(target => {
+  // Fetch all decision-makers (limit reasonable for scoring)
+  const decisionMakers = await app.prisma.decisionMaker.findMany({
+    take: 500,
+    where: { verified: true },
+  })
+
+  const scored = decisionMakers.map(dm => {
+    const dmDomains: string[] = typeof dm.domains === 'string' ? JSON.parse(dm.domains) : (dm.domains as string[])
     let score = 0
     for (const kw of allKeywords) {
-      for (const td of target.domains) {
+      for (const td of dmDomains) {
         if (kw.includes(td) || td.includes(kw)) score++
       }
     }
-    return { target, score }
+    // Bonus for high seniority
+    const seniorityBonus: Record<string, number> = { STAFF: 0, MANAGER: 2, DIRECTOR: 4, EXECUTIVE: 6, HEAD_OF_ORG: 8 }
+    score += seniorityBonus[(dm as any).seniority] || 0
+    return { id: dm.id, name: dm.name, role: dm.role, org: dm.org, email: dm.email, score }
   })
 
   return scored
     .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 5)
-    .map(s => s.target)
 }
 
 // ── Data Annex Generation ───────────────────────────────────────────────
@@ -297,8 +267,8 @@ export default async function advocacyRoutes(app: FastifyInstance) {
     // Generate data annex
     const dataAnnex = generateDataAnnex(mission, consensus, approvedOutputs)
 
-    // Match outreach targets
-    const outreachTargets = matchTargets(mission)
+    // Match outreach targets from the DecisionMaker database
+    const outreachTargets = await matchTargets(app, mission)
 
     // Create package
     const pkg = await app.prisma.advocacyPackage.create({
@@ -311,7 +281,7 @@ export default async function advocacyRoutes(app: FastifyInstance) {
       },
     })
 
-    // Create outreach records with draft messages
+    // Create outreach records with draft messages, linking to DecisionMaker DB
     for (const target of outreachTargets) {
       const draftMessage = generateDraftMessage(
         {
@@ -326,16 +296,17 @@ export default async function advocacyRoutes(app: FastifyInstance) {
           affirmCount: consensus.affirmCount,
           totalVotes: consensus.voteCount,
         },
-        { targetName: target.targetName, targetRole: target.targetRole, targetOrg: target.targetOrg }
+        { targetName: target.name, targetRole: target.role, targetOrg: target.org }
       )
 
       await app.prisma.advocacyOutreach.create({
         data: {
           packageId: pkg.id,
-          targetName: target.targetName,
-          targetRole: target.targetRole,
-          targetOrg: target.targetOrg,
-          targetEmail: target.targetEmail,
+          decisionMakerId: target.id,
+          targetName: target.name,
+          targetRole: target.role,
+          targetOrg: target.org,
+          targetEmail: target.email,
           draftMessage,
           status: 'DRAFT',
         },
@@ -544,5 +515,108 @@ export default async function advocacyRoutes(app: FastifyInstance) {
     })
 
     return { outreach: updated }
+  })
+
+  // ── List decision-makers (filtered by domain/orgType/seniority) ───────
+  app.get('/decision-makers', async (req, reply) => {
+    const { page = '1', limit = '50', domain, orgType, seniority, verified } = req.query as Record<string, string>
+    const where: any = {}
+
+    if (domain) where.domains = { contains: `"${domain}"` }
+    if (orgType) where.orgType = orgType
+    if (seniority) where.seniority = seniority
+    if (verified) where.verified = verified === 'true'
+
+    const pageNum = Math.max(1, parseInt(page))
+    const lim = Math.min(200, Math.max(1, parseInt(limit)))
+
+    const [total, dms] = await Promise.all([
+      app.prisma.decisionMaker.count({ where }),
+      app.prisma.decisionMaker.findMany({
+        where,
+        skip: (pageNum - 1) * lim,
+        take: lim,
+        orderBy: [{ orgType: 'asc' }, { name: 'asc' }],
+      }),
+    ])
+
+    return {
+      decisionMakers: dms.map((dm: any) => ({
+        id: dm.id,
+        name: dm.name,
+        role: dm.role,
+        org: dm.org,
+        email: dm.email,
+        domains: typeof dm.domains === 'string' ? JSON.parse(dm.domains) : dm.domains,
+        orgType: dm.orgType,
+        seniority: dm.seniority,
+        verified: dm.verified,
+      })),
+      pagination: { page: pageNum, limit: lim, total, pages: Math.ceil(total / lim) },
+    }
+  })
+
+  // ── Get a single decision-maker ───────────────────────────────────────
+  app.get('/decision-makers/:id', async (req, reply) => {
+    const id = (req.params as { id: string }).id
+
+    const dm = await app.prisma.decisionMaker.findUnique({ where: { id } })
+    if (!dm) return reply.code(404).send({ error: 'Decision-maker not found' })
+
+    return {
+      decisionMaker: {
+        id: dm.id,
+        name: dm.name,
+        role: dm.role,
+        org: dm.org,
+        email: dm.email,
+        domains: typeof dm.domains === 'string' ? JSON.parse(dm.domains) : dm.domains,
+        orgType: dm.orgType,
+        seniority: dm.seniority,
+        verified: dm.verified,
+        notes: dm.notes || null,
+      },
+    }
+  })
+
+  // ── Verify a decision-maker ──────────────────────────────────────────
+  app.patch('/decision-makers/:id/verify', async (req, reply) => {
+    const id = (req.params as { id: string }).id
+
+    const updated = await app.prisma.decisionMaker.update({
+      where: { id },
+      data: { verified: true, updatedAt: new Date() },
+    })
+
+    return { decisionMaker: { id: updated.id, verified: updated.verified } }
+  })
+
+  // ── Add a new decision-maker ─────────────────────────────────────────
+  app.post('/decision-makers', async (req, reply) => {
+    const { name, role, org, email, domains, orgType, seniority, notes } = req.body as {
+      name: string
+      role: string
+      org: string
+      email: string
+      domains: string[]
+      orgType?: string
+      seniority?: string
+      notes?: string
+    }
+
+    const dm = await app.prisma.decisionMaker.create({
+      data: {
+        name,
+        role,
+        org,
+        email,
+        domains: JSON.stringify(domains),
+        orgType: orgType || 'OTHER',
+        seniority: seniority || 'STAFF',
+        notes,
+      },
+    })
+
+    return reply.code(201).send({ decisionMaker: { ...dm, domains: JSON.parse(dm.domains) } })
   })
 }

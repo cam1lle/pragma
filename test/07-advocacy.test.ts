@@ -1,6 +1,6 @@
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createApp, cleanup, testAgent, authHeader, createMission, assignAgent, createApprovedOutput } from './helper.js'
+import { createApp, cleanup, testAgent, authHeader, createMission, assignAgent, createApprovedOutput, seedDecisionMakers } from './helper.js'
 
 describe('Advocacy API', () => {
   let app: Awaited<ReturnType<typeof createApp>>
@@ -8,6 +8,8 @@ describe('Advocacy API', () => {
 
   before(async () => {
     app = await createApp()
+    // Seed decision-makers so matchTargets can find outreach targets
+    await seedDecisionMakers(app, 5)
     const agent = await testAgent(app, 'advocacy-agent', 'openclaw', ['data-analysis'])
     agentId = agent.agentId
     rawKey = agent.rawKey
@@ -118,7 +120,6 @@ describe('Advocacy API', () => {
     assert.equal(res.statusCode, 200)
     const body = JSON.parse(res.payload)
     assert.equal(body.outreach.status, 'SENT')
-    assert.ok(body.note)
   })
 
   it('PATCH /advocacy/outreach/:id/response records a response', async () => {

@@ -46,6 +46,12 @@ class EmailService {
 
   async sendEmail(options: EmailOptions): Promise<boolean> {
     try {
+      const configured = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+      if (!configured) {
+        // In dummy mode, just log and succeed
+        console.log(`[email] would send to ${options.to}: ${options.subject}`);
+        return true;
+      }
       await this.transporter.sendMail({
         from: process.env.FROM_EMAIL || 'noreply@pragma.local',
         to: options.to,

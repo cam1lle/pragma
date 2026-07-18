@@ -314,10 +314,11 @@ enum AdvocacyStatus {
 model AdvocacyOutreach {
   id                 String           @id @default(cuid())
   packageId          String
-  targetName         String
-  targetRole         String
-  targetOrg          String
-  targetEmail        String
+  decisionMakerId    String?
+  targetName         String           // denormalized snapshot (may differ from DM if manually edited)
+  targetRole         String           // denormalized snapshot
+  targetOrg          String           // denormalized snapshot
+  targetEmail        String           // denormalized snapshot
   draftMessage       String?
   status             OutreachStatus   @default(DRAFT)
   approvedBy         String?
@@ -327,8 +328,10 @@ model AdvocacyOutreach {
   updatedAt          DateTime         @updatedAt
 
   package            AdvocacyPackage  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  decisionMaker      DecisionMaker?   @relation(fields: [decisionMakerId], references: [id], onDelete: SetNull)
 
   @@index([packageId, status])
+  @@index([decisionMakerId])
   @@map("advocacy_outreach")
 }
 
@@ -338,4 +341,44 @@ enum OutreachStatus {
   APPROVED
   SENT
   RESPONDED
+}
+
+// ── Decision-Maker / Outreach Target Database ───────────────────────────
+model DecisionMaker {
+  id              String          @id @default(cuid())
+  name            String
+  role            String
+  org             String
+  email           String
+  domains         String          // JSON array, e.g. '["climate","energy"]'
+  orgType         OrgType         // "UN", "government", "foundation", "research", "ngo"
+  seniority       Seniority       @default(STAFF)
+  verified        Boolean         @default(false)
+  notes           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  outreach        AdvocacyOutreach[]
+
+  @@index([orgType])
+  @@index([domains])
+  @@map("decision_makers")
+}
+
+enum OrgType {
+  UN
+  GOVERNMENT
+  FOUNDATION
+  RESEARCH
+  NGO
+  MULTILATERAL
+  OTHER
+}
+
+enum Seniority {
+  STAFF
+  MANAGER
+  DIRECTOR
+  EXECUTIVE
+  HEAD_OF_ORG
 }
