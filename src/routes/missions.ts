@@ -47,12 +47,6 @@ async function missionsRoutes(app: FastifyInstance) {
         orderBy: { createdAt: 'desc' },
         include: {
           tasks: true,
-          tasksTotal: {
-            _count: {},
-          },
-          tasksCompleted: {
-            _count: { where: { status: 'COMPLETE' } },
-          },
           _count: {
             select: {
               outputs: true,
@@ -69,6 +63,20 @@ async function missionsRoutes(app: FastifyInstance) {
         },
       }),
     ])
+
+    // Compute task counts per mission (no dedicated relation fields in schema)
+    const missionTaskCounts = await Promise.all(
+      missions.map(async (m) => {
+        const totalTasks = await app.prisma.task.count({ where: { missionId: m.id } })
+        const completedTasks = await app.prisma.task.count({
+          where: { missionId: m.id, status: 'COMPLETE' },
+        })
+        return { id: m.id, totalTasks, completedTasks }
+      }),
+    )
+    const countsMap = Object.fromEntries(
+      missionTaskCounts.map((c) => [c.id, { totalTasks: c.totalTasks, completedTasks: c.completedTasks }]),
+    )
 
     return {
       data: missions.map(m => ({
@@ -87,8 +95,8 @@ async function missionsRoutes(app: FastifyInstance) {
         createdAt: m.createdAt,
         updatedAt: m.updatedAt,
         progress: {
-          tasksTotal: m.tasksTotal._count,
-          tasksComplete: m.tasksCompleted._count,
+          tasksTotal: countsMap[m.id]?.totalTasks ?? 0,
+          tasksComplete: countsMap[m.id]?.completedTasks ?? 0,
           outputsTotal: m._count.outputs,
           assignmentsTotal: m._count.assignments,
         },
