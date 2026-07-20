@@ -191,4 +191,72 @@ describe('Advocacy API', () => {
     assert.ok(annex.limitations.length >= 1)
     assert.ok(annex.validatedOutputs.length >= 1)
   })
+
+  it('POST /advocacy/:missionId/batch-send sends all approved outreach', async () => {
+    // Approve all outreach items first
+    const listRes = await app.inject({ method: 'GET', url: `/api/v1/advocacy/${missionId}` })
+    const listBody = JSON.parse(listRes.payload)
+    const outreachItems = listBody.package.outreach
+
+    for (const item of outreachItems) {
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/advocacy/outreach/${item.id}/approve`,
+        payload: { approvedBy: 'batch-test' },
+      })
+    }
+
+    // Batch send
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/advocacy/${missionId}/batch-send`,
+    })
+    assert.equal(res.statusCode, 200)
+    const body = JSON.parse(res.payload)
+    assert.ok(body.sent >= 1)
+    assert.ok(body.total >= 1)
+    assert.ok(Array.isArray(body.results))
+    assert.equal(body.results.length, body.total)
+    // All should be sent (email service is in dummy mode)
+    assert.ok(body.results.every((r: any) => r.status === 'SENT'))
+  })
+
+  it('POST /advocacy/:missionId/batch-send returns 400 when no approved outreach', async () => {
+    // Use the existing package but approve only some outreach so we can test
+    // the case where approved items exist but none are in the right state.
+    // Instead, test that batch-send on a package with all-DRAFT outreach returns 400.
+    // We already have a package from the main test. Find a DRAFT outreach and reject it,
+    // then batch-send should return 400 (no approved items).
+    const listRes = await app.inject({ method: 'GET', url: `/api/v1/advocacy/${missionId}` })
+    const listBody = JSON.parse(listRes.payload)
+    const draftOutreach = listBody.package.outreach.find((o: any) => o.status === 'DRAFT')
+    if (draftOutreach) {
+      // Reject the draft to clear it, then batch-send should have no approved
+      const res = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/advocacy/outreach/${draftOutreach.id}/reject`,
+      })
+      assert.equal(res.statusCode, 200)
+    }
+
+    // Now batch-send should find the package but have no approved items
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/advocacy/${missionId}/batch-send`,
+    })
+    assert.equal(res.statusCode, 400)
+    const body = JSON.parse(res.payload)
+    assert.equal(body.sent, 0)
+    assert.equal(body.failed, 0)
+  })
+
+  it('POST /advocacy/:missionId/batch-send returns 404 for unknown mission', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/advocacy/nonexistent-mission/batch-send',
+    })
+    assert.equal(res.statusCode, 404)
+    const body = JSON.parse(res.payload)
+    assert.ok(body.error)
+  })
 })

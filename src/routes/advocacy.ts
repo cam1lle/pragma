@@ -417,6 +417,88 @@ export default async function advocacyRoutes(app: FastifyInstance) {
     return { outreach: updated }
   })
 
+  // ── Batch send all approved outreach for a package ────────────────────
+  app.post('/advocacy/:missionId/batch-send', async (req, reply) => {
+    const missionId = (req.params as { missionId: string }).missionId
+
+    const pkg = await app.prisma.advocacyPackage.findFirst({
+      where: { missionId },
+      include: { outreach: { orderBy: { id: 'asc' } } },
+    })
+    if (!pkg) return reply.code(404).send({ error: 'No advocacy package for this mission' })
+
+    const outreachList = (pkg as any).outreach as any[]
+    const approved = outreachList.filter(o => o.status === 'APPROVED')
+
+    if (approved.length === 0) {
+      return reply.code(400).send({ error: 'No approved outreach items to send', sent: 0, failed: 0 })
+    }
+
+    // Send all approved outreach in parallel
+    const results = await Promise.allSettled(
+      approved.map(async (o: any) => {
+        try {
+          const emailSent = await emailService.sendEmail({
+            to: o.targetEmail,
+            subject: `Advocacy Outreach: ${o.package?.missionId || missionId}`,
+            text: o.draftMessage,
+          })
+
+          if (!emailSent) {
+            return { id: o.id, target: o.targetName, status: 'FAILED', reason: 'Email service returned false' }
+          }
+
+          await app.prisma.advocacyOutreach.update({
+            where: { id: o.id },
+            data: { status: 'SENT', sentAt: new Date() },
+          })
+
+          return { id: o.id, target: o.targetName, status: 'SENT' }
+        } catch (err) {
+          return { id: o.id, target: o.targetName, status: 'FAILED', reason: (err as Error).message }
+        }
+      })
+    )
+
+    const sent = results.filter(r => r.status === 'fulfilled' && (r as PromiseFulfilledResult<{ status: string }>).value.status === 'SENT').length
+    const failed = results.filter(r => r.status === 'fulfilled' && (r as PromiseFulfilledResult<{ status: string }>).value.status === 'FAILED').length
+    const errors = results
+      .filter(r => r.status === 'fulfilled' && (r as PromiseFulfilledResult<{ status: string }>).value.status === 'FAILED')
+      .map(r => (r as PromiseFulfilledResult<{ id: string; target: string; status: string; reason: string }>).value)
+
+    // Update package status
+    const allOutreach = await app.prisma.advocacyOutreach.findMany({
+      where: { packageId: pkg.id },
+    })
+    const allSent = allOutreach.every(o => o.status === 'SENT' || o.status === 'RESPONDED')
+    const anyPending = allOutreach.some(o => o.status === 'APPROVED' || o.status === 'DRAFT')
+    await app.prisma.advocacyPackage.update({
+      where: { id: pkg.id },
+      data: {
+        status: allSent ? 'COMPLETE' : (anyPending ? 'SENDING' : pkg.status),
+      },
+    })
+
+    // Log in workspace
+    await app.prisma.missionMessage.create({
+      data: {
+        missionId,
+        type: 'SYSTEM',
+        content: `Batch send completed: ${sent} sent, ${failed} failed out of ${approved.length} approved outreach items.`,
+      },
+    })
+
+    return reply.code(200).send({
+      sent,
+      failed,
+      total: approved.length,
+      results: results
+        .filter(r => r.status === 'fulfilled')
+        .map(r => (r as PromiseFulfilledResult<{ id: string; target: string; status: string; reason?: string }>).value),
+      ...(errors.length > 0 ? { errors } : {}),
+    })
+  })
+
   // ── Update outreach response ──────────────────────────────────────────
   app.patch('/advocacy/outreach/:id/response', async (req, reply) => {
     const id = (req.params as { id: string }).id
