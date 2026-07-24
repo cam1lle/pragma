@@ -3,5 +3,5 @@ dist/
 .env
 .prisma/
 *.log
-prisma/dev.db
+prisma/*.db
 prisma/:memory:
